@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 46, "column": 0}, "map": {"version":3,"sources":["file:///Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/src/app/api/deepgram/route.ts"],"sourcesContent":["import { NextResponse } from \"next/server\";\n\n// This endpoint provides the Deepgram API key to the client\n// In production, you should implement proper authentication and rate limiting\nexport async function GET() {\n  const apiKey = process.env.DEEPGRAM_API_KEY;\n\n  if (!apiKey) {\n    return NextResponse.json(\n      { error: \"Deepgram API key not configured\" },\n      { status: 500 }\n    );\n  }\n\n  return NextResponse.json({ apiKey });\n}\n"],"names":[],"mappings":";;;;AAAA;;AAIO,eAAe;IACpB,MAAM,SAAS,QAAQ,GAAG,CAAC,gBAAgB;IAE3C,IAAI,CAAC,QAAQ;QACX,OAAO,iTAAY,CAAC,IAAI,CACtB;YAAE,OAAO;QAAkC,GAC3C;YAAE,QAAQ;QAAI;IAElB;IAEA,OAAO,iTAAY,CAAC,IAAI,CAAC;QAAE;IAAO;AACpC"}}]
-}
