@@ -578,7 +578,9 @@ export default function PracticePage() {
     questions.forEach((q, idx) => {
       // Ensure consistent ID handling - match how IDs are created in the UI
       const questionId = q.id ? String(q.id) : `q-${idx}`;
-      if (selectedAnswers[questionId] === q.correct_answer) {
+      const userAnswer = selectedAnswers[questionId];
+      // Only count as correct if user answered AND the answer is correct
+      if (userAnswer !== undefined && userAnswer !== null && userAnswer !== '' && userAnswer === q.correct_answer) {
         correct++;
       }
     });
@@ -819,7 +821,9 @@ export default function PracticePage() {
                 // Ensure consistent ID handling - match how IDs are created in the quiz UI
                 const questionId = q.id ? String(q.id) : `q-${idx}`;
                 const userAnswer = selectedAnswers[questionId];
-                const isCorrect = userAnswer === q.correct_answer;
+                // Question is only correct if answered AND answer matches
+                const isAnswered = userAnswer !== undefined && userAnswer !== null && userAnswer !== '';
+                const isCorrect = isAnswered && userAnswer === q.correct_answer;
                 return (
                   <div key={questionId} className={`border p-4 ${isCorrect ? 'border-green-500 bg-green-900/20' : 'border-red-500 bg-red-900/20'}`}>
                     <div className="flex items-start gap-3">
@@ -829,7 +833,7 @@ export default function PracticePage() {
                       <div className="flex-1">
                         <p className="text-white font-medium">Q{idx + 1}: {q.question}</p>
                         <div className="mt-2 text-sm">
-                          <p className="text-slate-400">Your answer: <span className={isCorrect ? 'text-green-400' : 'text-red-400'}>{userAnswer ? `${userAnswer}: ${q.options?.[userAnswer as keyof typeof q.options]}` : 'Not answered'}</span></p>
+                          <p className="text-slate-400">Your answer: <span className={isCorrect ? 'text-green-400' : 'text-red-400'}>{isAnswered ? `${userAnswer}: ${q.options?.[userAnswer as keyof typeof q.options]}` : 'Not answered'}</span></p>
                           {!isCorrect && <p className="text-slate-400">Correct answer: <span className="text-green-400">{q.correct_answer}: {q.options?.[q.correct_answer as keyof typeof q.options]}</span></p>}
                         </div>
                         {q.explanation && (
