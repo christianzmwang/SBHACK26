@@ -162,11 +162,11 @@ export default function Home() {
             <div>
               <p className="text-sm font-semibold">Need a new plan?</p>
               <p className="text-sm text-slate-300">
-                Ask Omnes to reshape your focus blocks based on deadlines.
+                View your stats and generate a personalized study plan.
               </p>
             </div>
             <Link
-              href="/course-material"
+              href="/stats"
               className="bg-white border border-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-black hover:text-white cursor-pointer"
             >
               Generate plan

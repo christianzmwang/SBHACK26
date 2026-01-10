@@ -1367,8 +1367,8 @@ export default function PracticePage() {
           </button>
         </div>
 
-        {/* Generate Button */}
-        <div className="mb-6">
+        {/* Action Buttons */}
+        <div className="mb-6 flex gap-4">
           <button
             onClick={() => handleGenerateFromFolder(folder.id)}
             className="bg-white px-6 py-3 text-black font-semibold hover:bg-slate-200 transition cursor-pointer flex items-center gap-2"
@@ -1377,6 +1377,20 @@ export default function PracticePage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
             Generate Quiz or Flashcards
+          </button>
+          <button
+            onClick={() => {
+              const params = new URLSearchParams();
+              params.set("folderId", folder.id);
+              params.set("folderName", folder.name);
+              window.location.href = `/stats?${params.toString()}`;
+            }}
+            className="border border-white px-6 py-3 text-white font-semibold hover:bg-white hover:text-black transition cursor-pointer flex items-center gap-2"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+            View Stats & Generate Plan
           </button>
         </div>
 

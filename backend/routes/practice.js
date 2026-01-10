@@ -291,6 +291,304 @@ router.get('/overview', async (req, res) => {
 });
 
 // =====================
+// STATS & STUDY PLAN
+// =====================
+
+/**
+ * Get topic-level statistics for a user
+ * GET /api/practice/stats
+ */
+router.get('/stats', async (req, res) => {
+  try {
+    const userId = req.query.userId || req.headers['x-user-id'];
+    const folderId = req.query.folderId;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Get quiz attempts with topics for the user
+    // We'll aggregate scores by topic from quiz questions
+    let topicStats = [];
+    
+    // Get all quiz attempts for this user
+    const attemptsQuery = folderId
+      ? `SELECT qa.*, qs.name as quiz_name, qs.folder_id
+         FROM quiz_attempts qa
+         JOIN quiz_sets qs ON qa.quiz_set_id = qs.id
+         WHERE qa.user_id = $1 AND qs.folder_id = $2
+         ORDER BY qa.completed_at DESC`
+      : `SELECT qa.*, qs.name as quiz_name, qs.folder_id
+         FROM quiz_attempts qa
+         JOIN quiz_sets qs ON qa.quiz_set_id = qs.id
+         WHERE qa.user_id = $1
+         ORDER BY qa.completed_at DESC`;
+    
+    const attempts = await query(
+      attemptsQuery,
+      folderId ? [userId, folderId] : [userId]
+    );
+
+    // Get all questions from quizzes the user has attempted
+    const quizIds = [...new Set(attempts.rows.map(a => a.quiz_set_id))];
+    
+    if (quizIds.length > 0) {
+      // Get questions with their topics
+      const questionsResult = await query(
+        `SELECT qq.*, qs.id as quiz_set_id
+         FROM quiz_questions qq
+         JOIN quiz_sets qs ON qq.quiz_set_id = qs.id
+         WHERE qs.id = ANY($1)`,
+        [quizIds]
+      );
+
+      // Build topic stats from attempts
+      const topicMap = new Map();
+      
+      for (const attempt of attempts.rows) {
+        const answers = typeof attempt.answers === 'string' 
+          ? JSON.parse(attempt.answers) 
+          : attempt.answers;
+        
+        if (!answers) continue;
+        
+        // Get questions for this quiz
+        const quizQuestions = questionsResult.rows.filter(q => q.quiz_set_id === attempt.quiz_set_id);
+        
+        for (const question of quizQuestions) {
+          const topic = question.topic || 'General';
+          const answerData = answers[question.id];
+          
+          if (!topicMap.has(topic)) {
+            topicMap.set(topic, {
+              name: topic,
+              totalQuestions: 0,
+              correctAnswers: 0,
+              lastPracticed: null
+            });
+          }
+          
+          const topicData = topicMap.get(topic);
+          topicData.totalQuestions++;
+          
+          if (answerData?.isCorrect) {
+            topicData.correctAnswers++;
+          }
+          
+          // Update last practiced
+          if (!topicData.lastPracticed || new Date(attempt.completed_at) > new Date(topicData.lastPracticed)) {
+            topicData.lastPracticed = attempt.completed_at;
+          }
+        }
+      }
+
+      // Convert to array and calculate scores
+      topicStats = Array.from(topicMap.values()).map(topic => ({
+        id: topic.name.toLowerCase().replace(/\s+/g, '-'),
+        name: topic.name,
+        score: topic.totalQuestions > 0 
+          ? Math.round((topic.correctAnswers / topic.totalQuestions) * 100)
+          : 0,
+        totalQuestions: topic.totalQuestions,
+        correctAnswers: topic.correctAnswers,
+        lastPracticed: formatLastPracticed(topic.lastPracticed)
+      }));
+    }
+
+    res.json({
+      success: true,
+      topics: topicStats
+    });
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Generate a personalized study plan based on weak topics
+ * GET /api/practice/study-plan
+ */
+router.get('/study-plan', async (req, res) => {
+  try {
+    const userId = req.query.userId || req.headers['x-user-id'];
+    const folderId = req.query.folderId;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // First get the user's stats to identify weak areas
+    // Reuse the stats logic
+    const attemptsQuery = folderId
+      ? `SELECT qa.*, qs.name as quiz_name, qs.folder_id
+         FROM quiz_attempts qa
+         JOIN quiz_sets qs ON qa.quiz_set_id = qs.id
+         WHERE qa.user_id = $1 AND qs.folder_id = $2
+         ORDER BY qa.completed_at DESC`
+      : `SELECT qa.*, qs.name as quiz_name, qs.folder_id
+         FROM quiz_attempts qa
+         JOIN quiz_sets qs ON qa.quiz_set_id = qs.id
+         WHERE qa.user_id = $1
+         ORDER BY qa.completed_at DESC`;
+    
+    const attempts = await query(
+      attemptsQuery,
+      folderId ? [userId, folderId] : [userId]
+    );
+
+    const quizIds = [...new Set(attempts.rows.map(a => a.quiz_set_id))];
+    const topicMap = new Map();
+    
+    if (quizIds.length > 0) {
+      const questionsResult = await query(
+        `SELECT qq.*, qs.id as quiz_set_id
+         FROM quiz_questions qq
+         JOIN quiz_sets qs ON qq.quiz_set_id = qs.id
+         WHERE qs.id = ANY($1)`,
+        [quizIds]
+      );
+
+      for (const attempt of attempts.rows) {
+        const answers = typeof attempt.answers === 'string' 
+          ? JSON.parse(attempt.answers) 
+          : attempt.answers;
+        
+        if (!answers) continue;
+        
+        const quizQuestions = questionsResult.rows.filter(q => q.quiz_set_id === attempt.quiz_set_id);
+        
+        for (const question of quizQuestions) {
+          const topic = question.topic || 'General';
+          const answerData = answers[question.id];
+          
+          if (!topicMap.has(topic)) {
+            topicMap.set(topic, { total: 0, correct: 0 });
+          }
+          
+          topicMap.get(topic).total++;
+          if (answerData?.isCorrect) {
+            topicMap.get(topic).correct++;
+          }
+        }
+      }
+    }
+
+    // Generate study tasks based on weak topics
+    const tasks = [];
+    let taskId = 1;
+    
+    // Sort topics by score (weakest first)
+    const topicScores = Array.from(topicMap.entries())
+      .map(([name, data]) => ({
+        name,
+        score: data.total > 0 ? (data.correct / data.total) * 100 : 0,
+        total: data.total,
+        correct: data.correct
+      }))
+      .sort((a, b) => a.score - b.score);
+
+    for (const topic of topicScores) {
+      // Determine priority based on score
+      let priority;
+      if (topic.score < 40) priority = 'high';
+      else if (topic.score < 70) priority = 'medium';
+      else priority = 'low';
+
+      // Add flashcard review for weak topics
+      if (topic.score < 70) {
+        const cardCount = topic.score < 40 ? 20 : 15;
+        tasks.push({
+          id: `task-${taskId++}`,
+          type: 'flashcards',
+          topic: topic.name,
+          title: `Review ${topic.name} by Flashcards`,
+          description: `Strengthen your understanding of ${topic.name} concepts`,
+          estimatedTime: `${Math.round(cardCount * 1.5)} mins`,
+          estimatedMinutes: Math.round(cardCount * 1.5),
+          cardCount,
+          priority,
+          completed: false
+        });
+      }
+
+      // Add quiz for practice
+      if (topic.score < 80) {
+        const questionCount = topic.score < 50 ? 10 : 5;
+        tasks.push({
+          id: `task-${taskId++}`,
+          type: 'quiz',
+          topic: topic.name,
+          title: `Take a ${questionCount} question quiz`,
+          description: `Test your knowledge of ${topic.name}`,
+          estimatedTime: `${Math.round(questionCount * 2.5)} mins`,
+          estimatedMinutes: Math.round(questionCount * 2.5),
+          questionCount,
+          priority,
+          completed: false
+        });
+      }
+    }
+
+    // If no tasks were generated, add some default tasks
+    if (tasks.length === 0) {
+      tasks.push({
+        id: 'task-1',
+        type: 'practice',
+        topic: 'General',
+        title: 'Start practicing with a quiz',
+        description: 'Take your first quiz to get personalized recommendations',
+        estimatedTime: '15 mins',
+        estimatedMinutes: 15,
+        priority: 'medium',
+        completed: false
+      });
+    }
+
+    // Calculate total time
+    const totalMinutes = tasks.reduce((sum, t) => sum + t.estimatedMinutes, 0);
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    const totalEstimatedTime = hours > 0 
+      ? `${hours} hr${hours > 1 ? 's' : ''} ${mins > 0 ? `${mins} mins` : ''}`
+      : `${mins} mins`;
+
+    res.json({
+      success: true,
+      studyPlan: {
+        id: `plan-${Date.now()}`,
+        name: folderId ? 'Folder Study Plan' : 'Personalized Study Plan',
+        createdAt: new Date().toISOString(),
+        totalEstimatedTime,
+        tasks
+      }
+    });
+  } catch (error) {
+    console.error('Error generating study plan:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper to format last practiced time
+function formatLastPracticed(date) {
+  if (!date) return null;
+  
+  const now = new Date();
+  const practiced = new Date(date);
+  const diffMs = now - practiced;
+  const diffMins = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  
+  if (diffMins < 60) return 'Just now';
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays} days ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)} week${Math.floor(diffDays / 7) > 1 ? 's' : ''} ago`;
+  return `${Math.floor(diffDays / 30)} month${Math.floor(diffDays / 30) > 1 ? 's' : ''} ago`;
+}
+
+// =====================
 // QUIZ OPERATIONS
 // =====================
 
