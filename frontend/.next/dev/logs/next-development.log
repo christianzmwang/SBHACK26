@@ -1,12 +1,7 @@
-[00:14:12.777] Server  ERROR   ⨯ Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/app/api/auth/[...nextauth]/[__metadata_id__]/route/app-paths-manifest.json'
-[00:14:12.805] Server  ERROR   ⨯ Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/pages/_app/build-manifest.json'
-[00:14:12.830] Server  ERROR   Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/app/api/auth/[...nextauth]/[__metadata_id__]/route/app-paths-manifest.json'
-[00:14:12.841] Server  ERROR   ⨯ Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/pages/_app/build-manifest.json'
-[00:14:12.857] Server  ERROR   Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/pages/_app/build-manifest.json'
-[00:14:12.898] Server  ERROR   ⨯ Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/app/api/auth/[...nextauth]/[__metadata_id__]/route/app-paths-manifest.json'
-[00:14:12.915] Server  ERROR   ⨯ Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/pages/_app/build-manifest.json'
-[00:14:12.935] Server  ERROR   Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/app/api/auth/[...nextauth]/[__metadata_id__]/route/app-paths-manifest.json'
-[00:14:12.950] Server  ERROR   ⨯ Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/pages/_app/build-manifest.json'
-[00:14:12.963] Server  ERROR   Error: ENOENT: no such file or directory, open '/Users/christianwang/Developer/ucsbhack/SBHACK26/frontend/.next/dev/server/pages/_app/build-manifest.json'
-[00:14:13.072] Browser ERROR   {"kind":"error","name":"ClientFetchError","type":"AuthError"}
-[00:14:13.072] Browser ERROR   {"kind":"error","name":"ClientFetchError","type":"AuthError"}
+[00:00:00.648] Server  WARN    ⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+[00:00:00.712] Server  LOG     ✓ Ready in 503ms
+[00:00:01.671] Browser INFO    %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[00:00:02.602] Server  ERROR   (node:14756) [DEP0060] DeprecationWarning: The `util._extend` API is deprecated. Please use Object.assign() instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[00:00:06.389] Browser INFO    %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[00:00:12.218] Browser ERROR   Failed to create folder: {"name":"ApiError","status":500}
