@@ -30,6 +30,7 @@ interface Caption {
 
 export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps) {
   const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [captions, setCaptions] = useState<Caption[]>([]);
@@ -44,6 +45,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
   const isPlayingRef = useRef(false);
   const captionsEndRef = useRef<HTMLDivElement>(null);
+  const connectionAttemptRef = useRef(false);
 
   // Auto-scroll captions
   useEffect(() => {
@@ -59,19 +61,29 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
   }, [isOpen]);
 
   const cleanup = () => {
+    connectionAttemptRef.current = false;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
     if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        // Ignore errors on cleanup
+      }
       mediaRecorderRef.current = null;
     }
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      try {
+        audioContextRef.current.close();
+      } catch (e) {
+        // Ignore errors on cleanup
+      }
       audioContextRef.current = null;
     }
     setIsConnected(false);
+    setIsConnecting(false);
     setIsListening(false);
     setIsSpeaking(false);
   };
@@ -90,27 +102,50 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
   // Get Deepgram token
   const getDeepgramToken = async (): Promise<string> => {
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/voice/token`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+      console.log('Fetching token from:', `${apiUrl}/api/voice/token`);
+      
+      const response = await fetch(`${apiUrl}/api/voice/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
       
       if (!response.ok) {
-        throw new Error('Failed to get Deepgram token');
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('Token response error:', response.status, errorData);
+        throw new Error(errorData.error || errorData.details || `HTTP ${response.status}`);
       }
       
       const data = await response.json();
+      console.log('Token received successfully');
+      
+      if (!data.access_token) {
+        console.error('Token response missing access_token:', data);
+        throw new Error('Invalid token response from server');
+      }
+      
       return data.access_token;
     } catch (err) {
       console.error('Token error:', err);
-      throw new Error('Failed to authenticate with voice service');
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      throw new Error(`Voice service auth failed: ${message}`);
     }
   };
 
   // Connect to Deepgram WebSocket
   const connectDeepgram = async () => {
+    // Prevent multiple simultaneous connection attempts
+    if (connectionAttemptRef.current || isConnecting || isConnected) {
+      console.log('Connection already in progress or connected');
+      return;
+    }
+    
+    connectionAttemptRef.current = true;
+    setIsConnecting(true);
+    
     try {
       setError(null);
+      setCaptions([]); // Clear old captions
       addCaption('Connecting to voice service...', 'system');
 
       const token = await getDeepgramToken();
@@ -123,6 +158,8 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
 
       ws.onopen = () => {
         console.log('Deepgram WebSocket connected');
+        connectionAttemptRef.current = false;
+        setIsConnecting(false);
         setIsConnected(true);
         addCaption('Connected! Start speaking...', 'system');
         startRecording();
@@ -147,18 +184,24 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
 
       ws.onerror = (err) => {
         console.error('WebSocket error:', err);
+        connectionAttemptRef.current = false;
+        setIsConnecting(false);
         setError('Connection error. Please try again.');
         setIsConnected(false);
       };
 
       ws.onclose = () => {
         console.log('Deepgram WebSocket closed');
+        connectionAttemptRef.current = false;
+        setIsConnecting(false);
         setIsConnected(false);
         setIsListening(false);
       };
 
     } catch (err) {
       console.error('Connection error:', err);
+      connectionAttemptRef.current = false;
+      setIsConnecting(false);
       setError(err instanceof Error ? err.message : 'Failed to connect');
     }
   };
@@ -347,7 +390,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
 
   // Handle start/stop
   const toggleConnection = () => {
-    if (isConnected) {
+    if (isConnected || isConnecting) {
       cleanup();
     } else {
       connectDeepgram();
@@ -475,15 +518,19 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
               onClick={toggleConnection}
               disabled={isSpeaking}
               className={`relative w-20 h-20 rounded-full flex items-center justify-center transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
-                isConnected
-                  ? isListening
-                    ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/50 animate-pulse'
-                    : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/50'
-                  : 'bg-white hover:bg-slate-200'
+                isConnecting
+                  ? 'bg-amber-500 hover:bg-amber-600 shadow-lg shadow-amber-500/50 animate-pulse'
+                  : isConnected
+                    ? isListening
+                      ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/50 animate-pulse'
+                      : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/50'
+                    : 'bg-white hover:bg-slate-200'
               }`}
-              aria-label={isConnected ? 'Stop voice assistant' : 'Start voice assistant'}
+              aria-label={isConnecting ? 'Connecting...' : isConnected ? 'Stop voice assistant' : 'Start voice assistant'}
             >
-              {isConnected ? (
+              {isConnecting ? (
+                <div className="h-8 w-8 border-3 border-white border-t-transparent rounded-full animate-spin" />
+              ) : isConnected ? (
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
                   <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
@@ -498,13 +545,15 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
             {/* Status text */}
             <div className="text-center">
               <p className="text-white font-medium">
-                {isConnected 
-                  ? isListening 
-                    ? 'Listening...' 
-                    : isSpeaking 
-                      ? 'Speaking...' 
-                      : 'Ready to listen'
-                  : 'Click to start'}
+                {isConnecting
+                  ? 'Connecting...'
+                  : isConnected 
+                    ? isListening 
+                      ? 'Listening...' 
+                      : isSpeaking 
+                        ? 'Speaking...' 
+                        : 'Ready to listen'
+                    : 'Click to start'}
               </p>
               <p className="text-slate-400 text-sm mt-1">
                 Press <kbd className="px-2 py-0.5 bg-slate-700 rounded text-xs">Space</kbd> to toggle • <kbd className="px-2 py-0.5 bg-slate-700 rounded text-xs">Esc</kbd> to close
