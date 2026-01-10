@@ -24,7 +24,7 @@ __turbopack_context__.s([
  * Handles all communication with the backend
  */ const API_BASE = '/api';
 // Direct backend URL for long-running operations (bypasses Next.js proxy timeout)
-const BACKEND_URL = ("TURBOPACK compile-time value", "https://omnes.onrender.com") || 'http://localhost:3001';
+const BACKEND_URL = ("TURBOPACK compile-time value", "https://sbhack26.onrender.com") || 'http://localhost:3001';
 const BACKEND_API = `${BACKEND_URL}/api`;
 // API Error handling
 class ApiError extends Error {
