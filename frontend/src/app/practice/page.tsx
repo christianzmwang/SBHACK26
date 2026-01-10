@@ -570,6 +570,11 @@ export default function PracticePage() {
     setViewMode(previousView === 'folder' ? 'folder' : 'overview');
   };
 
+  // Helper to get correct answer from either field format (backend may return either)
+  const getCorrectAnswer = (q: Question): string | undefined => {
+    return q.correct_answer || q.correctAnswer;
+  };
+
   // Calculate quiz score
   const calculateScore = () => {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
@@ -579,8 +584,9 @@ export default function PracticePage() {
       // Ensure consistent ID handling - match how IDs are created in the UI
       const questionId = q.id ? String(q.id) : `q-${idx}`;
       const userAnswer = selectedAnswers[questionId];
+      const correctAnswer = getCorrectAnswer(q);
       // Only count as correct if user answered AND the answer is correct
-      if (userAnswer !== undefined && userAnswer !== null && userAnswer !== '' && userAnswer === q.correct_answer) {
+      if (userAnswer !== undefined && userAnswer !== null && userAnswer !== '' && userAnswer === correctAnswer) {
         correct++;
       }
     });
@@ -821,9 +827,10 @@ export default function PracticePage() {
                 // Ensure consistent ID handling - match how IDs are created in the quiz UI
                 const questionId = q.id ? String(q.id) : `q-${idx}`;
                 const userAnswer = selectedAnswers[questionId];
+                const correctAnswer = getCorrectAnswer(q);
                 // Question is only correct if answered AND answer matches
                 const isAnswered = userAnswer !== undefined && userAnswer !== null && userAnswer !== '';
-                const isCorrect = isAnswered && userAnswer === q.correct_answer;
+                const isCorrect = isAnswered && userAnswer === correctAnswer;
                 return (
                   <div key={questionId} className={`border p-4 ${isCorrect ? 'border-green-500 bg-green-900/20' : 'border-red-500 bg-red-900/20'}`}>
                     <div className="flex items-start gap-3">
@@ -834,7 +841,7 @@ export default function PracticePage() {
                         <p className="text-white font-medium">Q{idx + 1}: {q.question}</p>
                         <div className="mt-2 text-sm">
                           <p className="text-slate-400">Your answer: <span className={isCorrect ? 'text-green-400' : 'text-red-400'}>{isAnswered ? `${userAnswer}: ${q.options?.[userAnswer as keyof typeof q.options]}` : 'Not answered'}</span></p>
-                          {!isCorrect && <p className="text-slate-400">Correct answer: <span className="text-green-400">{q.correct_answer}: {q.options?.[q.correct_answer as keyof typeof q.options]}</span></p>}
+                          {!isCorrect && correctAnswer && <p className="text-slate-400">Correct answer: <span className="text-green-400">{correctAnswer}: {q.options?.[correctAnswer as keyof typeof q.options]}</span></p>}
                         </div>
                         {q.explanation && (
                           <p className="mt-2 text-sm text-slate-500 italic">{q.explanation}</p>
