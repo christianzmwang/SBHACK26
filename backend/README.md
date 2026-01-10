@@ -9,6 +9,7 @@ A Node.js backend service that powers the study platform with intelligent quiz g
 - **RAG-Powered Quiz Generation**: Generate quizzes using semantic search over your materials
 - **Math Support**: Special handling for LaTeX, equations, and mathematical content
 - **Flashcard Generation**: Create study flashcards from your materials
+- **Voice Study Assistant**: AI-powered voice agent with contextual awareness for interactive studying
 
 ## Quick Start
 
@@ -17,7 +18,7 @@ A Node.js backend service that powers the study platform with intelligent quiz g
 - Node.js 18+
 - PostgreSQL 15+ with pgvector extension (Supabase recommended)
 - OpenAI API key
-- Deepgram API key (optional, for audio transcription)
+- Deepgram API key (required for audio transcription and voice agent)
 - OpenRouter API key (for LLM calls)
 
 ### 1. Database Setup (Supabase)
@@ -35,10 +36,10 @@ Create a `.env` file in the backend directory:
 DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@YOUR_PROJECT.supabase.co:5432/postgres
 OPENAI_API_KEY=sk-...
 OPENROUTER_API_KEY=sk-or-...
+DEEPGRAM_API_KEY=...  # Required for audio transcription and voice agent
 FRONTEND_URL=http://localhost:3000
 
 # Optional
-DEEPGRAM_API_KEY=...
 NODE_ENV=development
 PORT=3001
 ```

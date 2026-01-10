@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
+import VoiceAgent from "@/app/components/VoiceAgent";
 import {
   foldersApi,
   practiceApi,
@@ -83,6 +84,9 @@ export default function PracticePage() {
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
 
+  // Voice Agent state
+  const [isVoiceAgentOpen, setIsVoiceAgentOpen] = useState(false);
+
   // Create folder modal
   const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -118,6 +122,26 @@ export default function PracticePage() {
       loadData();
     }
   }, [userId]);
+
+  // Keyboard shortcut for voice agent (V key)
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      // Only trigger if not typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      
+      // Press 'V' to open voice agent
+      if (e.key === 'v' || e.key === 'V') {
+        e.preventDefault();
+        setIsVoiceAgentOpen(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, []);
+
 
   const loadData = async () => {
     if (!userId) return;
@@ -698,6 +722,44 @@ export default function PracticePage() {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
+  // Build context for voice agent
+  const getVoiceAgentContext = () => {
+    const baseContext: any = {
+      viewMode,
+    };
+
+    if (viewMode === 'quiz' && (generatedQuiz || activeQuiz)) {
+      const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+      const currentQuestion = questions[currentQuestionIndex];
+      const currentQuestionId = currentQuestion?.id ? String(currentQuestion.id) : `q-${currentQuestionIndex}`;
+      
+      baseContext.currentQuestion = currentQuestion;
+      baseContext.currentQuestionIndex = currentQuestionIndex;
+      baseContext.totalQuestions = questions.length;
+      baseContext.userAnswer = selectedAnswers[currentQuestionId];
+      baseContext.showResults = showResults;
+      
+      if (showResults) {
+        baseContext.score = calculateScore();
+      }
+    } else if (viewMode === 'flashcards' && (generatedFlashcards || activeFlashcardSet)) {
+      const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+      baseContext.currentCard = cards[currentCardIndex];
+      baseContext.currentCardIndex = currentCardIndex;
+      baseContext.totalCards = cards.length;
+      baseContext.isFlipped = isFlipped;
+    } else if (viewMode === 'overview' && practiceOverview) {
+      baseContext.stats = {
+        totalQuizzes: practiceOverview.quizzes.length,
+        totalFlashcards: practiceOverview.flashcardSets.length,
+        totalFolders: practiceOverview.folders.length,
+      };
+    }
+
+    return baseContext;
+  };
+
+
   if (isLoading && !practiceOverview) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -718,6 +780,23 @@ export default function PracticePage() {
     if (showResults) {
       return (
         <div className="h-full overflow-auto -mt-4">
+          {/* Voice Agent Button */}
+          <button
+            onClick={() => setIsVoiceAgentOpen(true)}
+            className="fixed bottom-6 right-6 z-40 w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
+            aria-label="Open voice assistant"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            </svg>
+          </button>
+
+          <VoiceAgent
+            context={getVoiceAgentContext()}
+            isOpen={isVoiceAgentOpen}
+            onClose={() => setIsVoiceAgentOpen(false)}
+          />
+
           <div className="max-w-3xl mx-auto">
             <div className="mb-8 text-center">
               <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
@@ -781,6 +860,23 @@ export default function PracticePage() {
 
     return (
       <div className="h-full overflow-auto -mt-4">
+        {/* Voice Agent Button */}
+        <button
+          onClick={() => setIsVoiceAgentOpen(true)}
+          className="fixed bottom-6 right-6 z-40 w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
+          aria-label="Open voice assistant"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+          </svg>
+        </button>
+
+        <VoiceAgent
+          context={getVoiceAgentContext()}
+          isOpen={isVoiceAgentOpen}
+          onClose={() => setIsVoiceAgentOpen(false)}
+        />
+
         <div className="max-w-3xl mx-auto">
           <div className="mb-6 flex items-center justify-between">
             <div>
@@ -915,6 +1011,23 @@ export default function PracticePage() {
 
     return (
       <div className="h-full overflow-auto -mt-4">
+        {/* Voice Agent Button */}
+        <button
+          onClick={() => setIsVoiceAgentOpen(true)}
+          className="fixed bottom-6 right-6 z-40 w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
+          aria-label="Open voice assistant"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+          </svg>
+        </button>
+
+        <VoiceAgent
+          context={getVoiceAgentContext()}
+          isOpen={isVoiceAgentOpen}
+          onClose={() => setIsVoiceAgentOpen(false)}
+        />
+
         <div className="max-w-2xl mx-auto">
           <div className="mb-6 flex items-center justify-between">
             <div>
@@ -1416,6 +1529,27 @@ export default function PracticePage() {
         </h1>
       </div>
 
+      {/* Floating Voice Agent Button */}
+      <button
+        onClick={() => setIsVoiceAgentOpen(true)}
+        className="fixed bottom-6 right-6 z-40 w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
+        aria-label="Open voice assistant"
+        title="Voice Assistant (V)"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+        </svg>
+        <span className="absolute -top-10 right-0 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+          Voice Assistant
+        </span>
+      </button>
+
+      {/* Voice Agent Modal */}
+      <VoiceAgent
+        context={getVoiceAgentContext()}
+        isOpen={isVoiceAgentOpen}
+        onClose={() => setIsVoiceAgentOpen(false)}
+      />
 
       {/* Practice Folders */}
       <div className="mb-8">

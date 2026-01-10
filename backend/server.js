@@ -8,6 +8,7 @@ import materialsRoutes from './routes/materials.js';
 import foldersRoutes from './routes/folders.js';
 import usersRoutes from './routes/users.js';
 import practiceRoutes from './routes/practice.js';
+import voiceRoutes from './routes/voice.js';
 
 // Import services
 import { initializeDatabase } from './config/database.js';
@@ -66,6 +67,7 @@ app.use('/api', materialsRoutes);     // Materials management
 app.use('/api', foldersRoutes);       // Folders, classes, sections, and practice generation
 app.use('/api/users', usersRoutes);   // User management
 app.use('/api/practice', practiceRoutes);  // Practice folders, quizzes, flashcards
+app.use('/api/voice', voiceRoutes);   // Voice agent (Deepgram integration)
 
 // Error handler
 app.use(errorHandler);
@@ -106,7 +108,10 @@ const startServer = async () => {
 ║  ├─ GET  /api/practice/folders        Practice folders          ║
 ║  ├─ POST /api/practice/quizzes/generate  Generate quiz          ║
 ║  ├─ POST /api/practice/flashcards/generate  Generate flashcards ║
-║  └─ GET  /api/practice/quizzes/:id    Get saved quiz            ║
+║  ├─ GET  /api/practice/quizzes/:id    Get saved quiz            ║
+║  ├─ POST /api/voice/token             Get Deepgram token        ║
+║  ├─ POST /api/voice/chat              Voice chat with context   ║
+║  └─ POST /api/voice/tts               Text to speech            ║
 ╚════════════════════════════════════════════════════════════════╝
     `);
   });
