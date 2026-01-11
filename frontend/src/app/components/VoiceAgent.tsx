@@ -46,11 +46,12 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
   const captionsEndRef = useRef<HTMLDivElement>(null);
   const accumulatedTranscriptRef = useRef<string>('');
   
-  // For interruption support
+  // For interruption support (barge-in)
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsAbortControllerRef = useRef<AbortController | null>(null);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
   const isProcessingRef = useRef(false);
+  const isSpeakingRef = useRef(false);
 
   // Auto-scroll captions
   useEffect(() => {
@@ -66,7 +67,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
   }, [isOpen]);
 
   // Stop any ongoing speech/processing (for interruption support)
-  const stopCurrentPlayback = () => {
+  const stopCurrentPlayback = useCallback(() => {
     // Stop current audio playback
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
@@ -90,8 +91,9 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     }
     
     isProcessingRef.current = false;
+    isSpeakingRef.current = false;
     setIsSpeaking(false);
-  };
+  }, []);
 
   const cleanup = () => {
     // Stop any playing audio first
@@ -189,8 +191,8 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
             handleUtteranceEnd();
           } else if (data.type === 'SpeechStarted') {
             // User started speaking - if AI is speaking, interrupt it (barge-in)
-            if (isSpeaking || isProcessingRef.current) {
-              console.log('User interrupted - stopping AI playback');
+            if (isSpeakingRef.current || isProcessingRef.current) {
+              console.log('User interrupted - stopping AI playback (barge-in)');
               stopCurrentPlayback();
               addCaption('(Interrupted)', 'system');
             }
@@ -229,9 +231,9 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     const speechFinal = data.speech_final;
 
     if (transcript) {
-      // If AI is speaking and we get transcript, user is interrupting
-      if (isSpeaking || isProcessingRef.current) {
-        console.log('User interrupted with speech - stopping AI');
+      // If AI is speaking and we get transcript, user is interrupting (barge-in)
+      if (isSpeakingRef.current || isProcessingRef.current) {
+        console.log('User interrupted with speech - stopping AI (barge-in)');
         stopCurrentPlayback();
         addCaption('(Interrupted)', 'system');
       }
@@ -326,7 +328,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
                     fullText += data.text;
                   }
                   if (data.done && !abortController.signal.aborted) {
-                    // Convert to speech (only if not interrupted)
+                    // Add caption first, then speak (only if not interrupted)
                     addCaption(fullText, 'assistant');
                     await speakText(fullText);
                   }
@@ -370,6 +372,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     return new Promise(async (resolve, reject) => {
       try {
         setIsSpeaking(true);
+        isSpeakingRef.current = true;
         
         const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/voice/tts`, {
           method: 'POST',
@@ -385,6 +388,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         // Check if aborted before playing
         if (abortController.signal.aborted) {
           setIsSpeaking(false);
+          isSpeakingRef.current = false;
           resolve();
           return;
         }
@@ -398,6 +402,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
 
         audio.onended = () => {
           setIsSpeaking(false);
+          isSpeakingRef.current = false;
           URL.revokeObjectURL(audioUrl);
           currentAudioRef.current = null;
           resolve();
@@ -405,6 +410,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
 
         audio.onerror = (e) => {
           setIsSpeaking(false);
+          isSpeakingRef.current = false;
           URL.revokeObjectURL(audioUrl);
           currentAudioRef.current = null;
           reject(e);
@@ -413,6 +419,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         // Check one more time before playing
         if (abortController.signal.aborted) {
           setIsSpeaking(false);
+          isSpeakingRef.current = false;
           URL.revokeObjectURL(audioUrl);
           resolve();
           return;
@@ -424,11 +431,13 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         if (err instanceof Error && err.name === 'AbortError') {
           console.log('TTS request aborted (user interrupted)');
           setIsSpeaking(false);
+          isSpeakingRef.current = false;
           resolve();
           return;
         }
         console.error('Speech synthesis error:', err);
         setIsSpeaking(false);
+        isSpeakingRef.current = false;
         reject(err);
       }
     });
@@ -628,12 +637,13 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
             {/* Main button */}
             <button
               onClick={toggleConnection}
-              disabled={isSpeaking}
-              className={`relative w-20 h-20 rounded-full flex items-center justify-center transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`relative w-20 h-20 rounded-full flex items-center justify-center transition-all transform hover:scale-105 ${
                 isConnected
                   ? isListening
                     ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/50 animate-pulse'
-                    : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/50'
+                    : isSpeaking
+                      ? 'bg-purple-600 hover:bg-purple-700 shadow-lg shadow-purple-500/50'
+                      : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/50'
                   : 'bg-white hover:bg-slate-200'
               }`}
               aria-label={isConnected ? 'Stop voice assistant' : 'Start voice assistant'}
