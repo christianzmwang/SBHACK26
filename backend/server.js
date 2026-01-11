@@ -7,6 +7,7 @@ import generateRoutes from './routes/generate.js';
 import materialsRoutes from './routes/materials.js';
 import foldersRoutes from './routes/folders.js';
 import usersRoutes from './routes/users.js';
+import practiceRoutes from './routes/practice.js';
 import voiceRoutes from './routes/voice.js';
 
 // Import services
@@ -65,6 +66,7 @@ app.use('/api', generateRoutes);      // Original generate route
 app.use('/api', materialsRoutes);     // Materials management
 app.use('/api', foldersRoutes);       // Folders, classes, sections, and practice generation
 app.use('/api/users', usersRoutes);   // User management
+app.use('/api/practice', practiceRoutes);  // Practice folders, quizzes, flashcards
 app.use('/api/voice', voiceRoutes);   // Voice agent (Deepgram integration)
 
 // Error handler
