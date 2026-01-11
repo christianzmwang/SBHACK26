@@ -3045,14 +3045,6 @@ export default function PracticePage() {
               <h1 className="mt-1 text-xl font-semibold text-white">
                 {setName}
               </h1>
-              {/* Mastery progress indicator */}
-              {totalReviewed > 0 && (
-                <div className="mt-1 flex items-center gap-2 text-xs">
-                  <span className="text-green-400">{masteredCards.size} mastered</span>
-                  <span className="text-slate-600">•</span>
-                  <span className="text-orange-400">{needsPracticeCards.size} need practice</span>
-                </div>
-              )}
             </div>
             <button
               onClick={handleResetFlashcards}
@@ -3065,11 +3057,32 @@ export default function PracticePage() {
             </button>
           </div>
 
-          <div className="h-2 bg-slate-800 mb-6">
-            <div 
-              className="h-full bg-indigo-600 transition-all"
-              style={{ width: `${((currentCardIndex + 1) / cards.length) * 100}%` }}
-            />
+          {/* Mastery progress bar */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <div className="flex items-center gap-3">
+                <span className="text-slate-400">{totalReviewed} of {cards.length} reviewed</span>
+                {totalReviewed > 0 && (
+                  <span className="text-white font-medium">{masteryPercentage}% mastered</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                  <span className="text-green-400">{masteredCards.size}</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-orange-500 rounded-full"></span>
+                  <span className="text-orange-400">{needsPracticeCards.size}</span>
+                </span>
+              </div>
+            </div>
+            <div className="h-2 bg-slate-800 overflow-hidden">
+              <div 
+                className="h-full bg-indigo-600 transition-all duration-300"
+                style={{ width: `${(totalReviewed / cards.length) * 100}%` }}
+              />
+            </div>
           </div>
 
           <div 
