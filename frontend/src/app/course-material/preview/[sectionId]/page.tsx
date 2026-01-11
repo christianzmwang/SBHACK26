@@ -911,12 +911,21 @@ function PreviewContent() {
                                   <div className="space-y-0 divide-y divide-slate-800">
                                     {material.chapters.map((chapter) => (
                                       <div key={chapter.number} className="py-2.5">
-                                        <div className="flex items-center justify-between">
-                                          <div className="flex items-center gap-2">
-                                            <span className="text-indigo-400 font-mono text-xs font-medium min-w-[3rem]">Ch {chapter.number}</span>
-                                            <span className="text-white text-sm">{chapter.title}</span>
+                                        <div className="flex items-start justify-between">
+                                          <div className="flex-1">
+                                            <div className="flex items-center gap-2 mb-1">
+                                              <span className={`font-mono text-xs font-medium min-w-[3rem] ${chapter.isGeneratedTopic ? 'text-amber-400' : 'text-indigo-400'}`}>
+                                                {chapter.isGeneratedTopic ? `Topic ${chapter.number}` : `Ch ${chapter.number}`}
+                                              </span>
+                                              <span className="text-white text-sm font-medium">{chapter.title}</span>
+                                            </div>
+                                            {chapter.description && (
+                                              <p className="text-xs text-slate-400 ml-[3.5rem] mb-1 line-clamp-2">
+                                                {chapter.description}
+                                              </p>
+                                            )}
                                           </div>
-                                          <div className="text-xs text-slate-400 flex-shrink-0 ml-4">
+                                          <div className="text-xs text-slate-400 flex-shrink-0 ml-4 mt-0.5">
                                             {chapter.chunkCount} ({chapter.percentage}%)
                                           </div>
                                         </div>

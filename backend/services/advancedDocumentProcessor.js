@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
 import { MathAwareChunker, SimpleChunker } from './mathAwareChunker.js';
-import { generateBatchEmbeddings, estimateTokenCount } from './embeddingService.js';
+import { generateBatchEmbeddings, estimateTokenCount, cosineSimilarity } from './embeddingService.js';
 import { query, transaction } from '../config/database.js';
 import { transcribeAudio, validateAudioFile } from './audioTranscriptionService.js';
 
@@ -169,6 +169,37 @@ const processDocument = async (file, metadata) => {
             title = `${sortedTopics[0][0]}`;
           }
 
+          // Extract a representative summary sentence
+          let description = '';
+          if (cluster.centroid) {
+            // Find chunk closest to centroid
+            let bestChunk = null;
+            let bestSim = -1;
+            
+            cluster.chunks.forEach(c => {
+              if (c.embedding) {
+                const sim = cosineSimilarity(c.embedding, cluster.centroid);
+                if (sim > bestSim) {
+                  bestSim = sim;
+                  bestChunk = c;
+                }
+              }
+            });
+
+            if (bestChunk && bestChunk.content) {
+              // Extract first meaningful sentence (simple heuristic)
+              // Match first sentence that is at least 20 chars long and ends with .!?
+              // Avoids headers/lists
+              const sentences = bestChunk.content.match(/[A-Z][^.!?\n]{20,}[.!?]/g);
+              if (sentences && sentences.length > 0) {
+                description = sentences[0];
+              } else {
+                // Fallback to first 100 chars
+                description = bestChunk.content.substring(0, 100).replace(/\n/g, ' ') + '...';
+              }
+            }
+          }
+
           // Update chunks in the main array with this chapter info
           cluster.chunks.forEach(clusterChunk => {
             if (typeof clusterChunk._tempIndex !== 'undefined') {
@@ -177,6 +208,7 @@ const processDocument = async (file, metadata) => {
                 originalChunk.metadata = originalChunk.metadata || {};
                 originalChunk.metadata.chapter = i + 1;
                 originalChunk.metadata.chapterTitle = title;
+                originalChunk.metadata.chapterDescription = description;
                 originalChunk.metadata.isGeneratedTopic = true;
               }
             }
@@ -185,6 +217,7 @@ const processDocument = async (file, metadata) => {
           return {
             number: i + 1,
             title: title,
+            description: description,
             chunkCount: cluster.chunks.length,
             topics: [] // Sub-topics could be added here if we did hierarchical clustering
           };

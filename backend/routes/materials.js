@@ -227,6 +227,8 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
             chapterMap.set(key, {
               chapterNum,
               chapterTitle,
+              chapterDescription: chunk.metadata?.chapterDescription,
+              isGeneratedTopic: chunk.metadata?.isGeneratedTopic,
               chunkCount: 0,
               topics: new Set()
             });
@@ -234,6 +236,11 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
           
           const chapter = chapterMap.get(key);
           chapter.chunkCount++;
+          
+          // If we found a description later and didn't have one, add it
+          if (!chapter.chapterDescription && chunk.metadata?.chapterDescription) {
+            chapter.chapterDescription = chunk.metadata.chapterDescription;
+          }
           
           if (chunk.metadata?.topic) {
             chapter.topics.add(chunk.metadata.topic);
@@ -254,6 +261,8 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
           .map(ch => ({
             number: ch.chapterNum,
             title: ch.chapterTitle,
+            description: ch.chapterDescription,
+            isGeneratedTopic: ch.isGeneratedTopic,
             chunkCount: ch.chunkCount,
             percentage: ((ch.chunkCount / materialChunks.length) * 100).toFixed(1),
             topics: Array.from(ch.topics)
