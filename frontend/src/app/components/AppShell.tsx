@@ -3,6 +3,8 @@
 import { useSession } from "next-auth/react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { useEffect } from "react";
+import { healthApi } from "@/lib/api";
 import UserMenu from "./UserMenu";
 import Taskbar from "./Taskbar";
 
@@ -13,6 +15,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // Hide shell on login page or when not authenticated
   const isLoginPage = pathname === "/login";
   const showShell = status === "authenticated" && !isLoginPage;
+
+  // Warm up the backend connection on mount
+  useEffect(() => {
+    if (status === "authenticated") {
+      healthApi.check().catch(() => {
+        // Ignore errors, this is just a best-effort warmup
+      });
+    }
+  }, [status]);
 
   if (!showShell) {
     return <>{children}</>;

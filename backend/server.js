@@ -11,7 +11,7 @@ import practiceRoutes from './routes/practice.js';
 import voiceRoutes from './routes/voice.js';
 
 // Import services
-import { initializeDatabase } from './config/database.js';
+import { initializeDatabase, query } from './config/database.js';
 import { errorHandler } from './services/utils.js';
 import { cleanupOldFiles } from './middleware/upload.js';
 
@@ -54,11 +54,23 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // Health check
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  let dbStatus = 'unknown';
+  try {
+    if (process.env.DATABASE_URL) {
+      await query('SELECT 1');
+      dbStatus = 'connected';
+    }
+  } catch (e) {
+    dbStatus = 'disconnected';
+    console.warn('Health check DB probe failed:', e.message);
+  }
+
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '1.0.0',
+    db: dbStatus
   });
 });
 

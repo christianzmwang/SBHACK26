@@ -14,7 +14,7 @@ export const getPool = () => {
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : { rejectUnauthorized: false },
       max: 10, // Reduced from 20 to avoid hitting connection limits
       min: 2, // Keep minimum connections alive
-      idleTimeoutMillis: 30000, // Reduced idle timeout to close stale connections faster
+      idleTimeoutMillis: 600000, // Increased to 10 minutes to prevent frequent cold starts
       connectionTimeoutMillis: 30000, // Increased to 30s for slower connections
       statement_timeout: 60000, // Increased for long running queries
       query_timeout: 60000, // Increased for long running queries
