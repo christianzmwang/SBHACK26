@@ -493,6 +493,20 @@ const generateQuestionsForCluster = async (cluster, options) => {
         }
       }
       
+      // Handle truncated responses - if starts with [ but no closing ], try to fix it
+      if (!jsonMatch) {
+        const trimmed = response.trim();
+        if (trimmed.startsWith('[')) {
+          // Try to find the last complete object and close the array
+          const lastCompleteObject = trimmed.lastIndexOf('}');
+          if (lastCompleteObject > 0) {
+            const fixedJson = trimmed.substring(0, lastCompleteObject + 1) + ']';
+            console.log(`[Cluster ${clusterIndex + 1}] Attempting to fix truncated JSON response`);
+            jsonMatch = [fixedJson];
+          }
+        }
+      }
+      
       if (!jsonMatch) {
         // Log a preview of what the LLM actually returned for debugging
         console.warn(`[Cluster ${clusterIndex + 1}] No JSON array found in response. Preview: ${response.substring(0, 500)}...`);
@@ -795,34 +809,82 @@ export const generateQuizFromSections = async (options) => {
       console.log(`  - ${g.chapterTitle}: ${g.targetQuestions} questions (${g.proportion} of content)`);
     });
   } else {
-    // No chapter structure - fall back to topic clustering
-    console.log(`[QuizGen] No chapter structure detected, using topic clustering`);
-    // Reduce cluster count to speed up generation (fewer LLM calls)
-    const maxClusters = Math.min(6, Math.ceil(questionCount / 2)); // At least 2 questions per cluster
-    const numClusters = Math.min(maxClusters, Math.ceil(allChunks.length / MIN_CHUNKS_PER_GROUP));
+    // No chapter structure - use CONTENT-BASED topic clustering
+    // Cluster count is based on content size, NOT quiz size
+    // Aim for ~20-30 chunks per cluster for meaningful topic groupings
+    console.log(`[QuizGen] No chapter structure detected, using content-based topic clustering`);
+    
+    const CHUNKS_PER_TOPIC = 25; // Target chunks per topic cluster
+    const contentBasedClusters = Math.ceil(allChunks.length / CHUNKS_PER_TOPIC);
+    // Ensure reasonable bounds: min 2 clusters, max 12 clusters
+    const numClusters = Math.max(2, Math.min(12, contentBasedClusters));
+    
+    console.log(`[QuizGen] Content has ${allChunks.length} chunks -> ${numClusters} topic clusters`);
+    
     const clusters = clusterChunksByTopic(allChunks, numClusters);
     
-    const bufferMultiplier = 1.3;
-    const targetPerCluster = Math.ceil((questionCount * bufferMultiplier) / clusters.length);
+    // Distribute questions proportionally across clusters based on cluster size
+    // This ensures good coverage even for small quizzes
+    const totalClusterChunks = clusters.reduce((sum, c) => sum + c.chunks.length, 0);
     
-    generationGroups = clusters.map((cluster, i) => ({
-      chapterNum: i + 1,
-      chapterTitle: `Topic ${i + 1}`,
-      chunks: cluster.chunks,
-      centroid: cluster.centroid,
-      targetQuestions: targetPerCluster
-    }));
+    generationGroups = clusters.map((cluster, i) => {
+      // Proportional distribution based on cluster content size
+      const proportion = cluster.chunks.length / totalClusterChunks;
+      const rawTarget = Math.round(questionCount * proportion);
+      // Ensure at least 1 question per cluster for coverage (if quiz size allows)
+      const minPerCluster = questionCount >= clusters.length ? 1 : 0;
+      const targetQuestions = Math.max(minPerCluster, rawTarget);
+      
+      return {
+        chapterNum: i + 1,
+        chapterTitle: `Topic ${i + 1}`,
+        chunks: cluster.chunks,
+        centroid: cluster.centroid,
+        targetQuestions,
+        proportion: (proportion * 100).toFixed(1) + '%'
+      };
+    });
+    
+    // Filter out clusters with 0 questions (for very small quizzes)
+    generationGroups = generationGroups.filter(g => g.targetQuestions > 0);
+    
+    // Adjust totals to match requested count
+    let currentTotal = generationGroups.reduce((sum, g) => sum + g.targetQuestions, 0);
+    while (currentTotal < questionCount && generationGroups.length > 0) {
+      // Add to largest cluster
+      generationGroups.sort((a, b) => b.chunks.length - a.chunks.length)[0].targetQuestions++;
+      currentTotal++;
+    }
+    while (currentTotal > questionCount && generationGroups.length > 0) {
+      // Remove from cluster with most questions (if > 1)
+      const largest = generationGroups.sort((a, b) => b.targetQuestions - a.targetQuestions).find(g => g.targetQuestions > 1);
+      if (largest) {
+        largest.targetQuestions--;
+        currentTotal--;
+      } else {
+        break;
+      }
+    }
+    
+    console.log(`[QuizGen] Topic distribution for ${questionCount} questions across ${generationGroups.length} topics:`);
+    generationGroups.forEach(g => {
+      console.log(`  - ${g.chapterTitle}: ${g.targetQuestions} questions (${g.proportion} of content)`);
+    });
   }
 
   // 4. Generate questions for each group
   const startTime = Date.now();
-  const bufferMultiplier = useChapterMode ? 1.5 : 1.3; // Generate more buffer for chapter mode
+  // Small buffer to ensure we get enough questions after deduplication
+  const bufferMultiplier = 1.15;
+  
+  // Cap questions per LLM call to avoid truncated responses
+  const MAX_QUESTIONS_PER_CALL = 10;
   
   const results = await runInBatches(generationGroups, CONCURRENCY_LIMIT, (group, index) => 
     generateQuestionsForCluster(
       { chunks: group.chunks, centroid: group.centroid || null },
       {
-        count: Math.ceil(group.targetQuestions * bufferMultiplier),
+        count: Math.min(MAX_QUESTIONS_PER_CALL, Math.max(1, Math.ceil(group.targetQuestions * bufferMultiplier))),
         questionType,
         difficulty,
         clusterIndex: index,
