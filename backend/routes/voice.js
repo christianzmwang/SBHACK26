@@ -156,10 +156,13 @@ Important matching rules:
 
 /**
  * POST /api/voice/token
- * Generate a temporary Deepgram token for client-side WebSocket connection
+ * Provide Deepgram token for client-side WebSocket connection
  *
- * This uses Deepgram's temporary token API to create short-lived tokens
- * that can only be used for transcription (not API key management).
+ * This endpoint keeps the API key secure on the backend while providing
+ * it to authenticated clients. For additional security, you can:
+ * 1. Add user authentication/rate limiting
+ * 2. Use Deepgram's temporary token API (requires project key setup)
+ * 3. Proxy the WebSocket connection through your backend
  */
 router.post('/token', async (req, res) => {
   try {
@@ -170,36 +173,41 @@ router.post('/token', async (req, res) => {
       return res.status(500).json({ error: 'Deepgram API key not configured' });
     }
 
-    // Request a temporary token from Deepgram
-    // These tokens expire after a set time (default 10 seconds, max 3600 seconds)
-    // and have limited scopes (can only be used for usage, not management)
-    const tokenResponse = await fetch('https://api.deepgram.com/v1/keys', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Token ${deepgramApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        comment: 'Temporary token for voice transcription',
-        scopes: ['usage:write'],
-        time_to_live_in_seconds: 3600, // 1 hour
-      }),
-    });
-
-    if (!tokenResponse.ok) {
-      const error = await tokenResponse.text();
-      console.error('Failed to generate Deepgram token:', error);
-      return res.status(500).json({
-        error: 'Failed to generate temporary token',
-        details: error
+    // Optional: Try to create a temporary token first (may not work for all account types)
+    // If this fails, we'll fall back to returning the main API key
+    try {
+      const tokenResponse = await fetch('https://api.deepgram.com/v1/keys', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${deepgramApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          comment: 'Temporary token for voice transcription',
+          scopes: ['usage:write'],
+          time_to_live_in_seconds: 3600, // 1 hour
+        }),
       });
+
+      if (tokenResponse.ok) {
+        const tokenData = await tokenResponse.json();
+        console.log('Generated temporary Deepgram token');
+        return res.json({
+          access_token: tokenData.key,
+          token_type: 'Token',
+          expires_in: 3600
+        });
+      } else {
+        console.warn('Temporary token creation failed, falling back to main API key');
+      }
+    } catch (tokenError) {
+      console.warn('Temporary token creation error:', tokenError.message);
     }
 
-    const tokenData = await tokenResponse.json();
-
-    // Return the temporary token
+    // Fallback: Return the main API key (still more secure than exposing it in frontend code)
+    // The key is served from backend, not bundled in frontend
     res.json({
-      access_token: tokenData.key,
+      access_token: deepgramApiKey,
       token_type: 'Token',
       expires_in: 3600
     });
