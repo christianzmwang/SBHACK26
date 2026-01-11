@@ -44,6 +44,14 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
   const isPlayingRef = useRef(false);
   const captionsEndRef = useRef<HTMLDivElement>(null);
+  const accumulatedTranscriptRef = useRef<string>('');
+  
+  // For interruption support (barge-in)
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsAbortControllerRef = useRef<AbortController | null>(null);
+  const chatAbortControllerRef = useRef<AbortController | null>(null);
+  const isProcessingRef = useRef(false);
+  const isSpeakingRef = useRef(false);
 
   // Auto-scroll captions
   useEffect(() => {
@@ -58,19 +66,61 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     return cleanup;
   }, [isOpen]);
 
+  // Stop any ongoing speech/processing (for interruption support)
+  const stopCurrentPlayback = useCallback(() => {
+    // Stop current audio playback
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      if (currentAudioRef.current.src) {
+        URL.revokeObjectURL(currentAudioRef.current.src);
+      }
+      currentAudioRef.current = null;
+    }
+    
+    // Abort ongoing TTS request
+    if (ttsAbortControllerRef.current) {
+      ttsAbortControllerRef.current.abort();
+      ttsAbortControllerRef.current = null;
+    }
+    
+    // Abort ongoing chat request
+    if (chatAbortControllerRef.current) {
+      chatAbortControllerRef.current.abort();
+      chatAbortControllerRef.current = null;
+    }
+    
+    isProcessingRef.current = false;
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+  }, []);
+
   const cleanup = () => {
+    // Stop any playing audio first
+    stopCurrentPlayback();
+    
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
     if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        // Ignore errors on cleanup
+      }
       mediaRecorderRef.current = null;
     }
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      try {
+        audioContextRef.current.close();
+      } catch (e) {
+        // Ignore errors on cleanup
+      }
       audioContextRef.current = null;
     }
+    accumulatedTranscriptRef.current = '';
+    setCurrentTranscript('');
     setIsConnected(false);
     setIsListening(false);
     setIsSpeaking(false);
@@ -115,8 +165,9 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
 
       const token = await getDeepgramToken();
       
-      // Connect to Deepgram Flux (v2/listen)
-      const wsUrl = `wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000&eager_eot_threshold=0.5&eot_threshold=1.0`;
+      // Connect to Deepgram v1/listen with browser-compatible settings
+      // Using nova-2 model with interim results and utterance detection
+      const wsUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&language=en&punctuate=true&interim_results=true&utterance_end_ms=1000&vad_events=true`;
       
       const ws = new WebSocket(wsUrl, ['token', token]);
       wsRef.current = ws;
@@ -132,13 +183,24 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         try {
           const data = JSON.parse(event.data);
           
-          if (data.type === 'Connected') {
-            console.log('Deepgram session connected:', data.request_id);
-          } else if (data.type === 'TurnInfo') {
-            handleTurnInfo(data);
+          // Handle v1/listen response format
+          if (data.type === 'Results') {
+            handleTranscriptResult(data);
+          } else if (data.type === 'UtteranceEnd') {
+            // User finished speaking - process the accumulated transcript
+            handleUtteranceEnd();
+          } else if (data.type === 'SpeechStarted') {
+            // User started speaking - if AI is ACTUALLY speaking audio, interrupt it (barge-in)
+            // Only interrupt if audio is playing, not during processing/waiting
+            if (isSpeakingRef.current) {
+              console.log('User interrupted - stopping AI playback (barge-in)');
+              stopCurrentPlayback();
+              addCaption('(Interrupted)', 'system');
+            }
+            setIsListening(true);
           } else if (data.type === 'Error') {
             console.error('Deepgram error:', data);
-            setError(data.description || 'Voice service error');
+            setError(data.description || data.message || 'Voice service error');
           }
         } catch (err) {
           console.error('Error parsing message:', err);
@@ -151,8 +213,8 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         setIsConnected(false);
       };
 
-      ws.onclose = () => {
-        console.log('Deepgram WebSocket closed');
+      ws.onclose = (event) => {
+        console.log('Deepgram WebSocket closed:', event.code, event.reason);
         setIsConnected(false);
         setIsListening(false);
       };
@@ -163,41 +225,69 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     }
   };
 
-  // Handle turn info from Deepgram Flux
-  const handleTurnInfo = async (data: any) => {
-    const { event, transcript, end_of_turn_confidence } = data;
+  // Handle transcript results from Deepgram v1/listen
+  const handleTranscriptResult = (data: any) => {
+    const transcript = data.channel?.alternatives?.[0]?.transcript;
+    const isFinal = data.is_final;
+    const speechFinal = data.speech_final;
 
-    // Update live transcript
-    if (transcript && transcript.trim()) {
-      setCurrentTranscript(transcript);
+    if (transcript) {
+      // If AI is ACTUALLY speaking audio and we get transcript, user is interrupting (barge-in)
+      // Only interrupt if audio is playing, not during processing/waiting for LLM
+      if (isSpeakingRef.current) {
+        console.log('User interrupted with speech - stopping AI (barge-in)');
+        stopCurrentPlayback();
+        addCaption('(Interrupted)', 'system');
+      }
+      
+      if (isFinal) {
+        // Final transcript for this segment - accumulate it
+        accumulatedTranscriptRef.current += (accumulatedTranscriptRef.current ? ' ' : '') + transcript;
+        setCurrentTranscript(accumulatedTranscriptRef.current);
+        setIsListening(true);
+        
+        // If speech_final is true, the speaker has paused - process the utterance
+        if (speechFinal && accumulatedTranscriptRef.current.trim()) {
+          const fullTranscript = accumulatedTranscriptRef.current.trim();
+          accumulatedTranscriptRef.current = '';
+          setCurrentTranscript('');
+          setIsListening(false);
+          processUserSpeech(fullTranscript);
+        }
+      } else {
+        // Interim result - show it but don't save
+        const interimDisplay = accumulatedTranscriptRef.current 
+          ? accumulatedTranscriptRef.current + ' ' + transcript 
+          : transcript;
+        setCurrentTranscript(interimDisplay);
+        setIsListening(true);
+      }
     }
+  };
 
-    // Handle events
-    if (event === 'StartOfTurn') {
-      setIsListening(true);
+  // Handle utterance end event
+  const handleUtteranceEnd = () => {
+    if (accumulatedTranscriptRef.current.trim()) {
+      const fullTranscript = accumulatedTranscriptRef.current.trim();
+      accumulatedTranscriptRef.current = '';
       setCurrentTranscript('');
-    } else if (event === 'EagerEndOfTurn') {
-      // User likely finished speaking with moderate confidence
-      console.log('Eager end of turn detected, confidence:', end_of_turn_confidence);
-      if (transcript && transcript.trim()) {
-        await processUserSpeech(transcript);
-      }
-    } else if (event === 'TurnResumed') {
-      // User continued speaking after eager end
-      console.log('Turn resumed');
-      setIsListening(true);
-    } else if (event === 'EndOfTurn') {
-      // User definitely finished speaking
       setIsListening(false);
-      if (transcript && transcript.trim()) {
-        await processUserSpeech(transcript);
-      }
-      setCurrentTranscript('');
+      processUserSpeech(fullTranscript);
     }
   };
 
   // Process user speech and get AI response
   const processUserSpeech = async (transcript: string) => {
+    // Cancel any previous processing
+    if (chatAbortControllerRef.current) {
+      chatAbortControllerRef.current.abort();
+    }
+    
+    // Create new abort controller for this request
+    const abortController = new AbortController();
+    chatAbortControllerRef.current = abortController;
+    isProcessingRef.current = true;
+    
     try {
       addCaption(transcript, 'user');
 
@@ -206,6 +296,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript, context }),
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
@@ -217,75 +308,141 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
       let fullText = '';
 
       if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+        try {
+          while (true) {
+            // Check if aborted
+            if (abortController.signal.aborted) {
+              reader.cancel();
+              break;
+            }
+            
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.text) {
-                  fullText += data.text;
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  if (data.text) {
+                    fullText += data.text;
+                  }
+                  if (data.done && !abortController.signal.aborted) {
+                    // Add caption first, then speak (only if not interrupted)
+                    addCaption(fullText, 'assistant');
+                    await speakText(fullText);
+                  }
+                  if (data.error) {
+                    throw new Error(data.error);
+                  }
+                } catch (e) {
+                  // Ignore parse errors for empty lines
                 }
-                if (data.done) {
-                  // Convert to speech
-                  await speakText(fullText);
-                  addCaption(fullText, 'assistant');
-                }
-                if (data.error) {
-                  throw new Error(data.error);
-                }
-              } catch (e) {
-                // Ignore parse errors for empty lines
               }
             }
           }
+        } finally {
+          reader.releaseLock();
         }
       }
     } catch (err) {
+      // Don't show error if aborted (user interrupted)
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Chat request aborted (user interrupted)');
+        return;
+      }
       console.error('Process speech error:', err);
       setError('Failed to process your message');
+    } finally {
+      isProcessingRef.current = false;
     }
   };
 
   // Convert text to speech using Deepgram TTS
-  const speakText = async (text: string) => {
-    try {
-      setIsSpeaking(true);
-      
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/voice/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate speech');
-      }
-
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-
-      audio.onended = () => {
-        setIsSpeaking(false);
-        URL.revokeObjectURL(audioUrl);
-      };
-
-      audio.onerror = () => {
-        setIsSpeaking(false);
-        URL.revokeObjectURL(audioUrl);
-      };
-
-      await audio.play();
-    } catch (err) {
-      console.error('Speech synthesis error:', err);
-      setIsSpeaking(false);
+  const speakText = async (text: string): Promise<void> => {
+    // Cancel any previous TTS request
+    if (ttsAbortControllerRef.current) {
+      ttsAbortControllerRef.current.abort();
     }
+    
+    // Create new abort controller for this request
+    const abortController = new AbortController();
+    ttsAbortControllerRef.current = abortController;
+    
+    return new Promise(async (resolve, reject) => {
+      try {
+        setIsSpeaking(true);
+        isSpeakingRef.current = true;
+        
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/voice/tts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to generate speech');
+        }
+
+        // Check if aborted before playing
+        if (abortController.signal.aborted) {
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          resolve();
+          return;
+        }
+
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        
+        // Store reference to current audio for interruption
+        currentAudioRef.current = audio;
+
+        audio.onended = () => {
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          URL.revokeObjectURL(audioUrl);
+          currentAudioRef.current = null;
+          resolve();
+        };
+
+        audio.onerror = (e) => {
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          URL.revokeObjectURL(audioUrl);
+          currentAudioRef.current = null;
+          reject(e);
+        };
+
+        // Check one more time before playing
+        if (abortController.signal.aborted) {
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          URL.revokeObjectURL(audioUrl);
+          resolve();
+          return;
+        }
+
+        await audio.play();
+      } catch (err) {
+        // Don't log error if aborted (user interrupted)
+        if (err instanceof Error && err.name === 'AbortError') {
+          console.log('TTS request aborted (user interrupted)');
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          resolve();
+          return;
+        }
+        console.error('Speech synthesis error:', err);
+        setIsSpeaking(false);
+        isSpeakingRef.current = false;
+        reject(err);
+      }
+    });
   };
 
   // Start recording audio
@@ -403,7 +560,13 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
           {captions.map((caption) => (
             <div
               key={caption.id}
-              className={`flex ${caption.type === 'user' ? 'justify-end' : 'justify-start'}`}
+              className={`flex ${
+                caption.type === 'user' 
+                  ? 'justify-end' 
+                  : caption.type === 'system' 
+                    ? 'justify-center' 
+                    : 'justify-start'
+              }`}
             >
               <div
                 className={`max-w-[80%] px-4 py-3 rounded-lg ${
@@ -411,7 +574,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
                     ? 'bg-indigo-600 text-white'
                     : caption.type === 'assistant'
                     ? 'bg-slate-700 text-white'
-                    : 'bg-slate-800 text-slate-400 text-sm italic'
+                    : 'bg-amber-900/40 text-amber-300 text-sm italic border border-amber-500/30'
                 }`}
               >
                 <p className="break-words">{caption.text}</p>
@@ -429,17 +592,20 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
             </div>
           )}
 
-          {/* Speaking indicator */}
+          {/* Speaking indicator with interruption hint */}
           {isSpeaking && (
             <div className="flex justify-start">
               <div className="bg-slate-700 px-4 py-3 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-1">
-                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1">
+                      <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                    <span className="text-slate-300 text-sm">Assistant is speaking...</span>
                   </div>
-                  <span className="text-slate-300 text-sm">Assistant is speaking...</span>
+                  <span className="text-xs text-slate-500 italic">Speak anytime to interrupt</span>
                 </div>
               </div>
             </div>
@@ -473,12 +639,13 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
             {/* Main button */}
             <button
               onClick={toggleConnection}
-              disabled={isSpeaking}
-              className={`relative w-20 h-20 rounded-full flex items-center justify-center transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`relative w-20 h-20 rounded-full flex items-center justify-center transition-all transform hover:scale-105 ${
                 isConnected
                   ? isListening
                     ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/50 animate-pulse'
-                    : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/50'
+                    : isSpeaking
+                      ? 'bg-purple-600 hover:bg-purple-700 shadow-lg shadow-purple-500/50'
+                      : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/50'
                   : 'bg-white hover:bg-slate-200'
               }`}
               aria-label={isConnected ? 'Stop voice assistant' : 'Start voice assistant'}

@@ -135,13 +135,31 @@ const clusterChunksByTopic = (chunks, numClusters = DEFAULT_CLUSTER_COUNT) => {
 
   console.log(`[TopicCluster] Clustering ${chunks.length} chunks into ${actualClusters} clusters`);
 
-  // Filter chunks with valid embeddings
-  const validChunks = chunks.filter(c => c.embedding && Array.isArray(c.embedding));
+  // Filter chunks with valid embeddings - handle both array and JSON string formats
+  const validChunks = chunks.filter(c => {
+    if (!c.embedding) return false;
+    if (Array.isArray(c.embedding)) return true;
+    // Try to parse if it's a string (PostgreSQL sometimes returns JSON as string)
+    if (typeof c.embedding === 'string') {
+      try {
+        const parsed = JSON.parse(c.embedding);
+        if (Array.isArray(parsed)) {
+          c.embedding = parsed; // Replace string with parsed array
+          return true;
+        }
+      } catch (e) {
+        return false;
+      }
+    }
+    return false;
+  });
   
   if (validChunks.length === 0) {
-    console.warn('[TopicCluster] No chunks with valid embeddings');
+    console.warn('[TopicCluster] No chunks with valid embeddings, using all chunks in single cluster');
     return [{ chunks, centroid: null }];
   }
+
+  console.log(`[TopicCluster] Found ${validChunks.length} chunks with valid embeddings`);
 
   // Initialize centroids using k-means++
   let centroids = initializeCentroids(validChunks, actualClusters);
@@ -246,7 +264,7 @@ const filterContentChunks = (chunks) => {
 };
 
 /**
- * Generate questions for a single cluster
+ * Generate questions for a single cluster with retry logic
  */
 const generateQuestionsForCluster = async (cluster, options) => {
   const {
@@ -262,7 +280,7 @@ const generateQuestionsForCluster = async (cluster, options) => {
   
   if (contentChunks.length === 0) {
     console.log(`[Cluster ${clusterIndex + 1}/${totalClusters}] No valid content chunks, skipping`);
-    return [];
+    return { questions: [], error: 'No valid content chunks' };
   }
 
   // Build context from chunks
@@ -285,40 +303,104 @@ const generateQuestionsForCluster = async (cluster, options) => {
 
   console.log(`[Cluster ${clusterIndex + 1}/${totalClusters}] Generating ${count} questions from ${contentChunks.length} chunks`);
 
-  try {
-    // Call LLM
-    const response = await callLLM(context, prompt);
+  // Retry logic
+  const maxRetries = 2;
+  let lastError = null;
 
-    // Parse questions from response
-    const jsonMatch = response.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.warn(`[Cluster ${clusterIndex + 1}] No JSON array found in response`);
-      return [];
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`[Cluster ${clusterIndex + 1}] Retry attempt ${attempt}/${maxRetries}`);
+        // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)));
+      }
+
+      // Call LLM with JSON mode enabled
+      const response = await callLLM(context, prompt, { jsonMode: true });
+
+      if (!response || typeof response !== 'string') {
+        throw new Error('Empty or invalid LLM response');
+      }
+
+      // Parse questions from response - try multiple extraction methods
+      let jsonMatch = response.match(/\[[\s\S]*\]/);
+      
+      // If no JSON array found, try to extract from markdown code blocks
+      if (!jsonMatch) {
+        const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (codeBlockMatch) {
+          const codeContent = codeBlockMatch[1].trim();
+          if (codeContent.startsWith('[')) {
+            jsonMatch = [codeContent];
+          }
+        }
+      }
+      
+      // If still no match, check if the entire response is a JSON array
+      if (!jsonMatch) {
+        const trimmed = response.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          jsonMatch = [trimmed];
+        }
+      }
+      
+      if (!jsonMatch) {
+        // Log a preview of what the LLM actually returned for debugging
+        console.warn(`[Cluster ${clusterIndex + 1}] No JSON array found in response. Preview: ${response.substring(0, 500)}...`);
+        throw new Error('No JSON array in LLM response');
+      }
+
+      let questions;
+      try {
+        questions = JSON.parse(jsonMatch[0]);
+      } catch (parseError) {
+        console.warn(`[Cluster ${clusterIndex + 1}] JSON parse error: ${parseError.message}`);
+        throw new Error(`JSON parse failed: ${parseError.message}`);
+      }
+
+      if (!Array.isArray(questions)) {
+        throw new Error('Parsed response is not an array');
+      }
+
+      // Validate and normalize questions
+      const validQuestions = questions
+        .filter(q => (q.question && q.question.trim()) || (q.front && q.front.trim()))
+        .map(q => ({
+          question: q.question?.trim(),
+          front: q.front?.trim(),
+          back: q.back?.trim(),
+          questionType: questionType,
+          options: q.options || null,
+          correctAnswer: q.correct_answer || q.correctAnswer || null,
+          explanation: q.explanation || null,
+          difficulty: q.difficulty || difficulty,
+          topic: q.topic || null,
+          chapter: q.chapter || null,
+          sourceChunkIds: contentChunks.slice(0, 3).map(c => c.id),
+          clusterIndex
+        }));
+
+      if (validQuestions.length === 0) {
+        console.warn(`[Cluster ${clusterIndex + 1}] Generated 0 valid questions. Raw response preview: ${response.substring(0, 200)}...`);
+        throw new Error('LLM returned no valid questions');
+      }
+
+      console.log(`[Cluster ${clusterIndex + 1}] Successfully generated ${validQuestions.length} valid questions`);
+      return { questions: validQuestions, error: null };
+
+    } catch (error) {
+      lastError = error;
+      console.error(`[Cluster ${clusterIndex + 1}] Attempt ${attempt + 1} failed:`, error.message);
+      
+      // Don't retry on certain errors
+      if (error.message?.includes('API key') || error.message?.includes('not configured')) {
+        break;
+      }
     }
-
-    const questions = JSON.parse(jsonMatch[0]);
-
-    // Validate and normalize questions
-    return questions
-      .filter(q => (q.question && q.question.trim()) || (q.front && q.front.trim()))
-      .map(q => ({
-        question: q.question?.trim(),
-        front: q.front?.trim(),
-        back: q.back?.trim(),
-        questionType: questionType,
-        options: q.options || null,
-        correctAnswer: q.correct_answer || q.correctAnswer || null,
-        explanation: q.explanation || null,
-        difficulty: q.difficulty || difficulty,
-        topic: q.topic || null,
-        chapter: q.chapter || null,
-        sourceChunkIds: contentChunks.slice(0, 3).map(c => c.id),
-        clusterIndex
-      }));
-  } catch (error) {
-    console.error(`[Cluster ${clusterIndex + 1}] Error generating questions:`, error.message);
-    return [];
   }
+
+  console.error(`[Cluster ${clusterIndex + 1}] All attempts failed. Last error:`, lastError?.message);
+  return { questions: [], error: lastError?.message || 'Unknown error' };
 };
 
 /**
@@ -420,7 +502,13 @@ JSON format:
   return `You are creating educational quiz questions to test understanding of the subject matter.
 ${clusterGuide}
 
-ABSOLUTE RULES - NEVER VIOLATE THESE:
+CRITICAL OUTPUT FORMAT REQUIREMENT:
+- You MUST respond with ONLY a valid JSON array
+- Do NOT include any text before or after the JSON array
+- Do NOT use markdown code blocks
+- Start your response with [ and end with ]
+
+CONTENT RULES (NEVER VIOLATE):
 1. NEVER use phrases like "according to the text", "the text states", "in the passage", "the author mentions", or ANY reference to "the text/passage/document/reading"
 2. NEVER ask about page numbers, index entries, or chapter numbers
 3. NEVER ask about book metadata (who wrote it, publication info, etc.)
@@ -428,31 +516,17 @@ ABSOLUTE RULES - NEVER VIOLATE THESE:
 
 Write questions as if you are a subject matter expert testing knowledge, NOT as if you are testing reading comprehension of a document.
 
-GOOD QUESTION EXAMPLES:
-- "What is the primary function of X in Y?"
-- "How does A relate to B?"
-- "What characterizes X?"
-- "Why is X significant in the field of Y?"
-
-BAD QUESTION EXAMPLES (NEVER CREATE THESE):
-- "According to the text, what characterizes X?" ❌
-- "What does the passage say about X?" ❌
-- "Based on the reading, how does X work?" ❌
-- "The author describes X as what?" ❌
-
 ${difficultyGuide}
 ${mathGuide}
 
 Requirements:
 1. Test conceptual understanding, not memorization of document structure
 2. Questions should be educational and meaningful
-3. Answers should reflect real knowledge of the subject
-4. Each question should cover a DIFFERENT concept from the content
-5. Ensure variety in the topics covered
+3. Each question should cover a DIFFERENT concept from the content
 
 ${formatGuide}
 
-Respond ONLY with the JSON array, no other text.`;
+REMEMBER: Respond with ONLY the JSON array. No other text.`;
 };
 
 /**
@@ -579,12 +653,46 @@ export const generateQuizFromSections = async (options) => {
   const generationTime = Date.now() - startTime;
   console.log(`[QuizGen] Parallel generation completed in ${generationTime}ms`);
 
-  // 7. Flatten all questions
-  const allQuestions = results.flat();
+  // 7. Collect questions and errors
+  const allQuestions = [];
+  const errors = [];
+  
+  for (const result of results) {
+    if (result.questions && result.questions.length > 0) {
+      allQuestions.push(...result.questions);
+    }
+    if (result.error) {
+      errors.push(result.error);
+    }
+  }
+  
   console.log(`[QuizGen] Generated ${allQuestions.length} total questions from ${clusters.length} clusters`);
+  
+  if (errors.length > 0) {
+    console.log(`[QuizGen] Errors encountered: ${errors.length} clusters failed`);
+    console.log(`[QuizGen] Error details: ${[...new Set(errors)].join('; ')}`);
+  }
 
   if (allQuestions.length === 0) {
-    throw new Error('Failed to generate any questions. Please try again.');
+    // Provide detailed error message
+    const uniqueErrors = [...new Set(errors)];
+    let errorMessage = 'No questions generated (internal check).';
+    
+    if (uniqueErrors.length > 0) {
+      if (uniqueErrors.some(e => e?.includes('API key') || e?.includes('not configured'))) {
+        errorMessage = 'LLM API is not configured. Please check server configuration.';
+      } else if (uniqueErrors.some(e => e?.includes('rate') || e?.includes('limit'))) {
+        errorMessage = 'LLM API rate limit exceeded. Please try again in a few minutes.';
+      } else if (uniqueErrors.some(e => e?.includes('JSON'))) {
+        errorMessage = 'Failed to parse LLM responses. Please try again.';
+      } else {
+        errorMessage = `Generation Failed: ${uniqueErrors[0]}. Please try selecting fewer materials.`;
+      }
+    } else {
+      errorMessage = 'LLM Generation Failed: No valid questions were produced. Please try again with different content.';
+    }
+    
+    throw new Error(errorMessage);
   }
 
   // 8. Deduplicate across all clusters
@@ -695,8 +803,45 @@ export const generateFlashcardsFromSections = async (options) => {
   const results = await Promise.all(parallelTasks);
   const generationTime = Date.now() - startTime;
 
-  // 6. Flatten and deduplicate
-  const allFlashcards = results.flat();
+  // 6. Collect flashcards and errors
+  const allFlashcards = [];
+  const errors = [];
+  
+  for (const result of results) {
+    if (result.questions && result.questions.length > 0) {
+      allFlashcards.push(...result.questions);
+    }
+    if (result.error) {
+      errors.push(result.error);
+    }
+  }
+  
+  if (errors.length > 0) {
+    console.log(`[FlashcardGen] Errors encountered: ${errors.length} clusters failed`);
+    console.log(`[FlashcardGen] Error details: ${[...new Set(errors)].join('; ')}`);
+  }
+
+  if (allFlashcards.length === 0) {
+    const uniqueErrors = [...new Set(errors)];
+    let errorMessage = 'No flashcards generated (internal check).';
+    
+    if (uniqueErrors.length > 0) {
+      if (uniqueErrors.some(e => e?.includes('API key') || e?.includes('not configured'))) {
+        errorMessage = 'LLM API is not configured. Please check server configuration.';
+      } else if (uniqueErrors.some(e => e?.includes('rate') || e?.includes('limit'))) {
+        errorMessage = 'LLM API rate limit exceeded. Please try again in a few minutes.';
+      } else if (uniqueErrors.some(e => e?.includes('JSON'))) {
+        errorMessage = 'Failed to parse LLM responses. Please try again.';
+      } else {
+        errorMessage = `Generation Failed: ${uniqueErrors[0]}. Please try selecting fewer materials.`;
+      }
+    } else {
+      errorMessage = 'LLM Generation Failed: No valid flashcards were produced. Please try again with different content.';
+    }
+    
+    throw new Error(errorMessage);
+  }
+
   const uniqueFlashcards = await deduplicateQuestions(allFlashcards);
 
   // 7. Take requested count

@@ -27,7 +27,8 @@ export interface Question {
   question: string;
   question_type: string;
   options: Record<string, string>;
-  correct_answer: string;
+  correct_answer?: string;
+  correctAnswer?: string; // Backend may return either format
   explanation: string;
   difficulty: string;
   topic?: string;

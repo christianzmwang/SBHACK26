@@ -23,7 +23,8 @@ export const callLLM = async (text, instruction, options = {}) => {
   const {
     model = null,
     temperature = 0.7,
-    maxTokens = 4000
+    maxTokens = 4000,
+    jsonMode = false
   } = options;
 
   // Build the prompt - combines instruction with context
@@ -38,7 +39,8 @@ export const callLLM = async (text, instruction, options = {}) => {
     return await callOpenRouter(prompt, { 
       model: selectedModel, 
       temperature, 
-      maxTokens 
+      maxTokens,
+      jsonMode
     });
   } catch (error) {
     // If primary model fails, try fallback
@@ -49,7 +51,8 @@ export const callLLM = async (text, instruction, options = {}) => {
       return await callOpenRouter(prompt, { 
         model: FALLBACK_MODEL, 
         temperature, 
-        maxTokens 
+        maxTokens,
+        jsonMode
       });
     }
     throw error;
@@ -70,21 +73,32 @@ const callOpenRouter = async (prompt, options = {}) => {
   const {
     model = PRIMARY_MODEL,
     temperature = 0.7,
-    maxTokens = 4000
+    maxTokens = 4000,
+    jsonMode = false
   } = options;
+
+  // Build messages - add system prompt for JSON mode
+  const messages = [];
+  
+  if (jsonMode) {
+    messages.push({
+      role: 'system',
+      content: 'You are a JSON generator. You MUST respond with valid JSON only. No explanations, no markdown, no text before or after the JSON. Start your response with [ or { and end with ] or }.'
+    });
+  }
+  
+  messages.push({
+    role: 'user',
+    content: prompt
+  });
 
   try {
     const response = await axios.post(
       `${OPENROUTER_BASE_URL}/chat/completions`,
       {
         model,
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        temperature,
+        messages,
+        temperature: jsonMode ? 0.3 : temperature, // Lower temperature for JSON mode
         max_tokens: maxTokens
       },
       {
@@ -176,8 +190,20 @@ export const streamLLM = async function* (prompt, options = {}) {
   yield response;
 };
 
+/**
+ * Stream chat completion with messages array (for voice/chat interfaces)
+ * Returns chunks via async generator
+ */
+export const streamChatCompletion = async function* (messages, options = {}) {
+  // For simplicity, just return the full response as a single chunk
+  // OpenRouter does support streaming but requires different SSE handling
+  const response = await callLLMWithHistory(messages, options);
+  yield response;
+};
+
 export default {
   callLLM,
   callLLMWithHistory,
-  streamLLM
+  streamLLM,
+  streamChatCompletion
 };
