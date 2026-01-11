@@ -106,6 +106,8 @@ export default function PracticePage() {
   // Voice Agent state
   const [isVoiceAgentOpen, setIsVoiceAgentOpen] = useState(false);
   const voiceAgentRef = useRef<VoiceAgentRef>(null);
+  const shouldAutoReadQuestionRef = useRef(false);
+  const shouldAutoReadCardRef = useRef(false);
 
   // Question overview modal state
   const [showQuestionOverview, setShowQuestionOverview] = useState(false);
@@ -224,6 +226,50 @@ export default function PracticePage() {
       }
     }
   }, [viewMode, isVoiceAgentOpen, showResults, generatedQuiz, activeQuiz, generatedFlashcards, activeFlashcardSet]);
+
+  // Auto-read question when currentQuestionIndex changes (for hands-free navigation)
+  useEffect(() => {
+    if (shouldAutoReadQuestionRef.current && isVoiceAgentOpen && viewMode === 'quiz' && !showResults) {
+      shouldAutoReadQuestionRef.current = false;
+      const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+      const currentQuestion = questions[currentQuestionIndex];
+      if (currentQuestion && voiceAgentRef.current) {
+        setTimeout(() => {
+          const questionText = `Question ${currentQuestionIndex + 1} of ${questions.length}. ${currentQuestion.question}`;
+          const answersText = currentQuestion.options
+            ? Object.entries(currentQuestion.options).map(([k, v]) => `${k}: ${v}`).join('. ')
+            : '';
+          voiceAgentRef.current?.speakText(`${questionText} The options are: ${answersText}`);
+        }, 300);
+      }
+    }
+  }, [currentQuestionIndex, isVoiceAgentOpen, viewMode, showResults, generatedQuiz, activeQuiz]);
+
+  // Auto-read card when currentCardIndex or isFlipped changes (for hands-free navigation)
+  useEffect(() => {
+    if (shouldAutoReadCardRef.current && isVoiceAgentOpen && viewMode === 'flashcards') {
+      shouldAutoReadCardRef.current = false;
+      const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+      const currentCard = cards[currentCardIndex];
+      if (currentCard && voiceAgentRef.current) {
+        setTimeout(() => {
+          const cardNumber = currentCardIndex + 1;
+          const totalCards = cards.length;
+
+          if (!isFlipped) {
+            const frontText = currentCard.front || currentCard.question || '';
+            const text = `Card ${cardNumber} of ${totalCards}. ${frontText}`;
+            voiceAgentRef.current?.speakText(text);
+          } else {
+            const backText = currentCard.back || currentCard.explanation || '';
+            const topicText = currentCard.topic ? ` Topic: ${currentCard.topic}.` : '';
+            const text = `Answer: ${backText}.${topicText}`;
+            voiceAgentRef.current?.speakText(text);
+          }
+        }, 300);
+      }
+    }
+  }, [currentCardIndex, isFlipped, isVoiceAgentOpen, viewMode, generatedFlashcards, activeFlashcardSet]);
 
   // Load specific quiz or flashcard set
   const loadQuiz = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
@@ -917,31 +963,25 @@ export default function PracticePage() {
   const handleNextCard = useCallback(() => {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     if (currentCardIndex < cards.length - 1) {
-      setCurrentCardIndex(prev => prev + 1);
       setIsFlipped(false);
-
-      // Auto-read next card if voice agent is open (hands-free mode)
-      if (isVoiceAgentOpen && voiceAgentRef.current) {
-        setTimeout(() => {
-          readCurrentCard();
-        }, 300);
+      // Flag for auto-read if voice agent is open (hands-free mode)
+      if (isVoiceAgentOpen) {
+        shouldAutoReadCardRef.current = true;
       }
+      setCurrentCardIndex(prev => prev + 1);
     }
-  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen, readCurrentCard]);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
 
   const handlePrevCard = useCallback(() => {
     if (currentCardIndex > 0) {
-      setCurrentCardIndex(prev => prev - 1);
       setIsFlipped(false);
-
-      // Auto-read previous card if voice agent is open (hands-free mode)
-      if (isVoiceAgentOpen && voiceAgentRef.current) {
-        setTimeout(() => {
-          readCurrentCard();
-        }, 300);
+      // Flag for auto-read if voice agent is open (hands-free mode)
+      if (isVoiceAgentOpen) {
+        shouldAutoReadCardRef.current = true;
       }
+      setCurrentCardIndex(prev => prev - 1);
     }
-  }, [currentCardIndex, isVoiceAgentOpen, readCurrentCard]);
+  }, [currentCardIndex, isVoiceAgentOpen]);
 
   const handleResetFlashcards = () => {
     setGeneratedFlashcards(null);
@@ -1087,14 +1127,11 @@ export default function PracticePage() {
       }
       handleSubmitQuiz();
     } else {
-      // Move to next unanswered question
+      // Move to next unanswered question and flag for auto-read
+      shouldAutoReadQuestionRef.current = true;
       setCurrentQuestionIndex(nextUnanswered);
-      // Read the question after a short delay to allow state to update
-      setTimeout(() => {
-        readCurrentQuestion();
-      }, 300);
     }
-  }, [findNextUnansweredQuestion, currentQuestionIndex, isVoiceAgentOpen, handleSubmitQuiz, readCurrentQuestion]);
+  }, [findNextUnansweredQuestion, currentQuestionIndex, isVoiceAgentOpen, handleSubmitQuiz]);
 
   // Render folder tree item for generation
   const renderFolderTree = (folder: Folder, depth = 0) => {
@@ -1454,9 +1491,11 @@ export default function PracticePage() {
 
       case 'NEXT_QUESTION': {
         if (viewMode === 'quiz' && !showResults) {
+          // Flag for auto-read after navigation if voice agent is open
+          if (isVoiceAgentOpen) {
+            shouldAutoReadQuestionRef.current = true;
+          }
           handleNextQuestion();
-          // Read the next question after navigation
-          setTimeout(() => readCurrentQuestion(), 300);
         }
         break;
       }
@@ -1477,16 +1516,11 @@ export default function PracticePage() {
 
       case 'FLIP_CARD': {
         if (viewMode === 'flashcards') {
-          setIsFlipped(prev => {
-            const newFlipState = !prev;
-            // Auto-read the card after flipping if voice agent is open
-            if (isVoiceAgentOpen && voiceAgentRef.current) {
-              setTimeout(() => {
-                readCurrentCard();
-              }, 300);
-            }
-            return newFlipState;
-          });
+          // Flag for auto-read after flipping if voice agent is open
+          if (isVoiceAgentOpen) {
+            shouldAutoReadCardRef.current = true;
+          }
+          setIsFlipped(prev => !prev);
         }
         break;
       }
@@ -1521,8 +1555,11 @@ export default function PracticePage() {
           const targetIndex = action.params.questionNumber - 1;
           const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
           if (targetIndex >= 0 && targetIndex < questions.length) {
+            // Flag for auto-read after navigation if voice agent is open
+            if (isVoiceAgentOpen) {
+              shouldAutoReadQuestionRef.current = true;
+            }
             setCurrentQuestionIndex(targetIndex);
-            setTimeout(() => readCurrentQuestion(), 300);
           }
         }
         break;
@@ -1547,18 +1584,21 @@ export default function PracticePage() {
         if (viewMode === 'quiz' && !showResults) {
           // Mark current as skipped (don't answer) and move to next unanswered
           const nextUnanswered = findNextUnansweredQuestion(currentQuestionIndex + 1);
-          
+
           if (nextUnanswered === -1 || nextUnanswered === currentQuestionIndex) {
             // No other unanswered questions or only current is unanswered
             if (voiceAgentRef.current && isVoiceAgentOpen) {
               voiceAgentRef.current.speakText("This is the only unanswered question. Please answer or submit the quiz.");
             }
           } else {
-            setCurrentQuestionIndex(nextUnanswered);
             if (voiceAgentRef.current && isVoiceAgentOpen) {
               voiceAgentRef.current.speakText("Skipping to the next question.").then(() => {
-                setTimeout(() => readCurrentQuestion(), 300);
+                // Flag for auto-read after the skip message finishes
+                shouldAutoReadQuestionRef.current = true;
+                setCurrentQuestionIndex(nextUnanswered);
               });
+            } else {
+              setCurrentQuestionIndex(nextUnanswered);
             }
           }
         }
