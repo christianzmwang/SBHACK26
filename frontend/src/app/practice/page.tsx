@@ -22,6 +22,7 @@ import {
   type MaterialStructure,
   type MaterialChapter,
   type TopicAnalysis,
+  type TopicPerformance,
 } from "@/lib/api";
 
 // View modes for the practice page
@@ -2510,65 +2511,129 @@ export default function PracticePage() {
     readCurrentCard
   ]);
 
-  // Helper to find section ID for a material ID
-  const findSectionIdForMaterial = useCallback((materialId: string, folders: Folder[]): string | null => {
+  // Helper to find section ID and material info for a material ID, including full folder path
+  const findMaterialInfo = useCallback((materialId: string, folders: Folder[], parentPath: string[] = []): { sectionId: string; folderId: string; folderPath: string[] } | null => {
     for (const folder of folders) {
+      const currentPath = [...parentPath, folder.id];
       for (const section of folder.sections) {
-        if (section.files && section.files.some(f => f.id === materialId)) {
-          return section.id;
+        if (section.files && section.files.some(f => f.materialId === materialId || f.id === materialId)) {
+          return { sectionId: section.id, folderId: folder.id, folderPath: currentPath };
         }
       }
-      const found = findSectionIdForMaterial(materialId, folder.subfolders);
+      const found = findMaterialInfo(materialId, folder.subfolders, currentPath);
       if (found) return found;
     }
     return null;
   }, []);
 
-  const handlePracticeFocusArea = async (topic: TopicPerformance) => {
-    const targetSectionIds = new Set<string>();
-    const targetChapters = new Map<string, Set<number>>();
+  // Helper to find folder path for a section ID
+  const findSectionInfo = useCallback((sectionId: string, folders: Folder[], parentPath: string[] = []): { folderId: string; folderPath: string[] } | null => {
+    for (const folder of folders) {
+      const currentPath = [...parentPath, folder.id];
+      for (const section of folder.sections) {
+        if (section.id === sectionId) {
+          return { folderId: folder.id, folderPath: currentPath };
+        }
+      }
+      const found = findSectionInfo(sectionId, folder.subfolders, currentPath);
+      if (found) return found;
+    }
+    return null;
+  }, []);
 
-    // 1. Collect Section IDs
-    if (topic.sourceSectionIds && topic.sourceSectionIds.length > 0) {
-      topic.sourceSectionIds.forEach(id => targetSectionIds.add(id));
+  // Setup generation state for practicing weak topics
+  const setupPracticeFromTopics = useCallback((topics: TopicPerformance[]) => {
+    // Clear previous selections
+    setSelectedFolders(new Set());
+    setSelectedMaterials(new Set());
+    setSelectedFiles(new Map());
+    setSelectedChapters(new Map());
+
+    const newSelectedMaterials = new Set<string>();
+    const newSelectedFiles = new Map<string, Set<string>>();
+    const newSelectedChapters = new Map<string, Set<number>>();
+    const newExpandedMaterials = new Set<string>();
+    const newExpandedFolders = new Set<string>();
+
+    topics.forEach(topic => {
+      // Process section IDs directly - find their folder paths to expand
+      if (topic.sourceSectionIds && topic.sourceSectionIds.length > 0) {
+        topic.sourceSectionIds.forEach(sectionId => {
+          newSelectedMaterials.add(sectionId);
+          
+          // Find and expand the folder path to this section
+          const sectionInfo = findSectionInfo(sectionId, materialFolders);
+          if (sectionInfo) {
+            sectionInfo.folderPath.forEach(fid => newExpandedFolders.add(fid));
+          }
+        });
+      }
+
+      // Process material IDs - find their sections and set up chapter filters
+      if (topic.sourceMaterialIds && topic.sourceMaterialIds.length > 0) {
+        topic.sourceMaterialIds.forEach(materialId => {
+          const info = findMaterialInfo(materialId, materialFolders);
+          if (info) {
+            // Select the section
+            newSelectedMaterials.add(info.sectionId);
+            
+            // Select the specific file/material within the section
+            const filesSet = newSelectedFiles.get(info.sectionId) || new Set<string>();
+            filesSet.add(materialId);
+            newSelectedFiles.set(info.sectionId, filesSet);
+
+            // Expand the entire folder path to show the selection
+            info.folderPath.forEach(fid => newExpandedFolders.add(fid));
+            
+            // Also expand this material to show its chapters/topics
+            newExpandedMaterials.add(materialId);
+          }
+
+          // Set chapter filter if topic has a specific chapter
+          if (topic.chapter) {
+            const chaptersSet = newSelectedChapters.get(materialId) || new Set<number>();
+            chaptersSet.add(topic.chapter);
+            newSelectedChapters.set(materialId, chaptersSet);
+          }
+        });
+      }
+    });
+
+    if (newSelectedMaterials.size === 0) {
+      setError('Cannot generate practice for these topics: source content not found. Please try generating a new quiz manually.');
+      return false;
     }
 
-    // 2. Process Material IDs (for chapters and fallback sections)
-    if (topic.sourceMaterialIds && topic.sourceMaterialIds.length > 0) {
-      topic.sourceMaterialIds.forEach(mid => {
-        // If we didn't have section IDs, try to find them from materials
-        if (targetSectionIds.size === 0) {
-           const sid = findSectionIdForMaterial(mid, materialFolders);
-           if (sid) targetSectionIds.add(sid);
-        }
+    // Apply state
+    setSelectedMaterials(newSelectedMaterials);
+    setSelectedFiles(newSelectedFiles);
+    setSelectedChapters(newSelectedChapters);
+    setExpandedMaterials(newExpandedMaterials);
+    setExpandedFolders(newExpandedFolders); // Replace all expanded folders with our selection path
 
-        // Set chapter filter if topic has specific chapter
-        if (topic.chapter) {
-          const current = targetChapters.get(mid) || new Set();
-          current.add(topic.chapter);
-          targetChapters.set(mid, current);
-        }
-      });
+    return true;
+  }, [materialFolders, findMaterialInfo, findSectionInfo]);
+
+  const handlePracticeFocusArea = useCallback((topic: TopicPerformance) => {
+    const success = setupPracticeFromTopics([topic]);
+    if (success) {
+      setViewMode('generate');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
+  }, [setupPracticeFromTopics]);
 
-    if (targetSectionIds.size === 0) {
-      setError('Cannot generate practice for this topic: source content not found. Please try generating a new quiz manually.');
+  const handlePracticeAllWeakPoints = useCallback(() => {
+    if (!topicAnalysis || topicAnalysis.focusAreas.length === 0) {
+      setError('No weak topics to practice.');
       return;
     }
 
-    // 3. Set State and Navigate
-    setSelectedSectionIds(Array.from(targetSectionIds));
-    setSelectedChapters(targetChapters);
-    
-    // Also expand these materials so user can see what's checked
-    if (topic.sourceMaterialIds) {
-        setExpandedMaterials(new Set(topic.sourceMaterialIds));
+    const success = setupPracticeFromTopics(topicAnalysis.focusAreas);
+    if (success) {
+      setViewMode('generate');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
-
-    setViewMode('generate');
-    // Scroll to top
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, [topicAnalysis, setupPracticeFromTopics]);
 
   if (isLoading && !practiceOverview) {
     return (
@@ -3829,47 +3894,7 @@ export default function PracticePage() {
             </div>
             <div className="flex items-center gap-4">
                <button 
-                  onClick={() => {
-                     const allWeakSectionIds = new Set<string>();
-                     const allWeakChapters = new Map<string, Set<number>>();
-                     const allMaterialIds = new Set<string>();
-
-                     topicAnalysis.focusAreas.forEach(topic => {
-                       // Sections
-                       if (topic.sourceSectionIds) {
-                         topic.sourceSectionIds.forEach(id => allWeakSectionIds.add(id));
-                       }
-                       
-                       // Materials & Chapters
-                       if (topic.sourceMaterialIds) {
-                         topic.sourceMaterialIds.forEach(mid => {
-                           allMaterialIds.add(mid);
-                           // Fallback section finding
-                           if (topic.sourceSectionIds?.length === 0) {
-                              const sid = findSectionIdForMaterial(mid, materialFolders);
-                              if (sid) allWeakSectionIds.add(sid);
-                           }
-
-                           if (topic.chapter) {
-                             const current = allWeakChapters.get(mid) || new Set();
-                             current.add(topic.chapter);
-                             allWeakChapters.set(mid, current);
-                           }
-                         });
-                       }
-                     });
-                     
-                     if (allWeakSectionIds.size > 0) {
-                        setSelectedSectionIds(Array.from(allWeakSectionIds));
-                        setSelectedChapters(allWeakChapters);
-                        if (allMaterialIds.size > 0) setExpandedMaterials(allMaterialIds);
-                        
-                        setViewMode('generate');
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                     } else {
-                        setError("No source materials found for these topics. Try generating a new quiz manually first.");
-                     }
-                  }}
+                  onClick={handlePracticeAllWeakPoints}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 hover:cursor-pointer text-white text-sm font-medium transition flex items-center gap-2"
                >
                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
@@ -3877,7 +3902,6 @@ export default function PracticePage() {
                  </svg>
                  Practice All Weak Points
                </button>
-
             </div>
           </div>
 
