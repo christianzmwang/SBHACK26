@@ -28,6 +28,7 @@ const CONCURRENCY_LIMIT = 20; // Increased from 8 to speed up generation
 const MIN_CHUNKS_PER_GROUP = 1;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
 const DEFAULT_CLUSTER_COUNT = 6;
+const MAX_QUESTIONS_PER_CALL = 20; // Cap questions per LLM call to avoid truncated responses
 
 /**
  * Run tasks in batches to respect rate limits
@@ -774,9 +775,6 @@ export const generateQuizFromSections = async (options, onProgress) => {
   const startTime = Date.now();
   // Small buffer to ensure we get enough questions after deduplication
   const bufferMultiplier = 1.15;
-  
-  // Cap questions per LLM call to avoid truncated responses
-  const MAX_QUESTIONS_PER_CALL = 20;
   
   // Break down groups into smaller tasks if they exceed MAX_QUESTIONS_PER_CALL
   const tasks = [];
