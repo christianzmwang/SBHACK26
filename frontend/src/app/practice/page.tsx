@@ -2475,27 +2475,22 @@ export default function PracticePage() {
           </button>
         </div>
 
-        {/* Generate Button */}
-        <div className="mb-6">
-          <button
-            onClick={() => handleGenerateFromFolder(folder.id)}
-            className="bg-white px-6 py-3 text-black font-semibold hover:bg-slate-200 transition cursor-pointer flex items-center gap-2"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            Create Practice Set
-          </button>
-        </div>
-
         {/* Practice Sets Section */}
         <div className="mb-8">
-          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-            Practice Sets ({folderQuizzes.length + folderFlashcards.length})
-          </h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-white">
+              Practice Sets ({folderQuizzes.length + folderFlashcards.length})
+            </h2>
+            <button
+              onClick={() => handleGenerateFromFolder(folder.id)}
+              className="bg-white px-4 py-1.5 text-sm text-black font-semibold hover:bg-slate-200 transition cursor-pointer flex items-center gap-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Create Practice Set
+            </button>
+          </div>
 
           {folderQuizzes.length === 0 && folderFlashcards.length === 0 ? (
             <div className="border border-dashed border-slate-700 bg-black p-8 text-center">
@@ -2507,36 +2502,87 @@ export default function PracticePage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {folderQuizzes.map(quiz => (
-                <div 
-                  key={quiz.id} 
-                  className="group border border-slate-800 bg-black p-4 hover:border-slate-600 hover:bg-slate-900/50 transition"
-                >
-                  <div className="flex items-center gap-4 mb-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-white font-medium">{quiz.name}</h3>
-                      <p className="text-slate-500 text-sm">
-                        {quiz.total_questions} questions • {formatDate(quiz.created_at)}
-                      </p>
-                    </div>
+              {folderQuizzes.map(quiz => {
+                const score = quiz.best_score ?? 0;
+                const circumference = 2 * Math.PI * 20;
+                const strokeDashoffset = circumference - (score / 100) * circumference;
+                
+                return (
+                  <div 
+                    key={quiz.id} 
+                    className="group border border-slate-800 bg-black p-5 hover:border-slate-600 hover:bg-slate-900/50 transition"
+                  >
                     <div className="flex items-center gap-4">
-                      {quiz.best_score !== undefined && quiz.best_score !== null && (
-                        <div className="text-right">
-                          <span className="text-white font-semibold">{quiz.best_score}%</span>
-                          <p className="text-slate-500 text-xs">Best score</p>
+                      <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-slate-800 flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-white font-medium text-base">{quiz.name}</h3>
+                        <p className="text-slate-500 text-sm mt-0.5">
+                          {quiz.total_questions} questions • {formatDate(quiz.created_at)}
+                        </p>
+                      </div>
+                      {/* Practice mode buttons */}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => loadQuiz(quiz.id, 'multiple_choice')}
+                          className="px-3 py-1.5 text-xs font-medium border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
+                        >
+                          Multiple Choice
+                        </button>
+                        <button
+                          onClick={() => loadQuiz(quiz.id, 'true_false')}
+                          className="px-3 py-1.5 text-xs font-medium border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
+                        >
+                          True/False
+                        </button>
+                        <button
+                          onClick={() => loadQuiz(quiz.id, 'flashcards')}
+                          className="px-3 py-1.5 text-xs font-medium border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
+                        >
+                          Flashcards
+                        </button>
+                      </div>
+                      {/* Circular progress indicator */}
+                      <div className="flex-shrink-0 relative w-14 h-14 flex items-center justify-center">
+                        <svg className="w-14 h-14 transform -rotate-90">
+                          <circle
+                            cx="28"
+                            cy="28"
+                            r="20"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                            fill="none"
+                            className="text-slate-800"
+                          />
+                          <circle
+                            cx="28"
+                            cy="28"
+                            r="20"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                            fill="none"
+                            strokeLinecap="round"
+                            className="text-white"
+                            style={{
+                              strokeDasharray: circumference,
+                              strokeDashoffset: strokeDashoffset,
+                              transition: 'stroke-dashoffset 0.5s ease'
+                            }}
+                          />
+                        </svg>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="text-white text-xs font-semibold">{score}%</span>
                         </div>
-                      )}
+                      </div>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           handleDeleteQuiz(quiz.id);
                         }}
-                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition cursor-pointer p-2"
+                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 transition cursor-pointer p-2"
                         title="Delete practice set"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2545,62 +2591,77 @@ export default function PracticePage() {
                       </button>
                     </div>
                   </div>
-                  {/* Practice mode buttons */}
-                  <div className="flex gap-2 ml-14">
-                    <button
-                      onClick={() => loadQuiz(quiz.id, 'multiple_choice')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-blue-500/50 text-blue-400 hover:bg-blue-500/20 transition cursor-pointer"
-                    >
-                      <span className="w-1.5 h-1.5 bg-blue-400 rounded-full"></span>
-                      Multiple Choice
-                    </button>
-                    <button
-                      onClick={() => loadQuiz(quiz.id, 'true_false')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-green-500/50 text-green-400 hover:bg-green-500/20 transition cursor-pointer"
-                    >
-                      <span className="w-1.5 h-1.5 bg-green-400 rounded-full"></span>
-                      True/False
-                    </button>
-                    <button
-                      onClick={() => loadQuiz(quiz.id, 'flashcards')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-purple-500/50 text-purple-400 hover:bg-purple-500/20 transition cursor-pointer"
-                    >
-                      <span className="w-1.5 h-1.5 bg-purple-400 rounded-full"></span>
-                      Flashcards
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {folderFlashcards.map(set => (
-                <div 
-                  key={set.id} 
-                  className="group border border-slate-800 bg-black p-4 hover:border-slate-600 hover:bg-slate-900/50 transition"
-                >
-                  <div className="flex items-center gap-4 mb-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-white font-medium">{set.name}</h3>
-                      <p className="text-slate-500 text-sm">
-                        {set.total_cards} cards • {formatDate(set.created_at)}
-                      </p>
-                    </div>
+                );
+              })}
+              {folderFlashcards.map(set => {
+                const mastery = set.total_cards > 0 ? Math.round((set.mastery_count / set.total_cards) * 100) : 0;
+                const circumference = 2 * Math.PI * 20;
+                const strokeDashoffset = circumference - (mastery / 100) * circumference;
+                
+                return (
+                  <div 
+                    key={set.id} 
+                    className="group border border-slate-800 bg-black p-5 hover:border-slate-600 hover:bg-slate-900/50 transition"
+                  >
                     <div className="flex items-center gap-4">
-                      {set.mastery_count > 0 && (
-                        <div className="text-right">
-                          <span className="text-white font-semibold">{Math.round((set.mastery_count / set.total_cards) * 100)}%</span>
-                          <p className="text-slate-500 text-xs">Mastery</p>
+                      <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-slate-800 flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-white font-medium text-base">{set.name}</h3>
+                        <p className="text-slate-500 text-sm mt-0.5">
+                          {set.total_cards} cards • {formatDate(set.created_at)}
+                        </p>
+                      </div>
+                      {/* Practice mode buttons */}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => loadFlashcardSet(set.id)}
+                          className="px-3 py-1.5 text-xs font-medium border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
+                        >
+                          Study Flashcards
+                        </button>
+                      </div>
+                      {/* Circular progress indicator */}
+                      <div className="flex-shrink-0 relative w-14 h-14 flex items-center justify-center">
+                        <svg className="w-14 h-14 transform -rotate-90">
+                          <circle
+                            cx="28"
+                            cy="28"
+                            r="20"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                            fill="none"
+                            className="text-slate-800"
+                          />
+                          <circle
+                            cx="28"
+                            cy="28"
+                            r="20"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                            fill="none"
+                            strokeLinecap="round"
+                            className="text-white"
+                            style={{
+                              strokeDasharray: circumference,
+                              strokeDashoffset: strokeDashoffset,
+                              transition: 'stroke-dashoffset 0.5s ease'
+                            }}
+                          />
+                        </svg>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="text-white text-xs font-semibold">{mastery}%</span>
                         </div>
-                      )}
+                      </div>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           handleDeleteFlashcardSet(set.id);
                         }}
-                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition cursor-pointer p-2"
+                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 transition cursor-pointer p-2"
                         title="Delete flashcard set"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2609,18 +2670,8 @@ export default function PracticePage() {
                       </button>
                     </div>
                   </div>
-                  {/* Practice mode buttons */}
-                  <div className="flex gap-2 ml-14">
-                    <button
-                      onClick={() => loadFlashcardSet(set.id)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-purple-500/50 text-purple-400 hover:bg-purple-500/20 transition cursor-pointer"
-                    >
-                      <span className="w-1.5 h-1.5 bg-purple-400 rounded-full"></span>
-                      Study Flashcards
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -2902,19 +2953,19 @@ export default function PracticePage() {
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 bg-blue-500/20 rounded flex items-center justify-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div className="w-8 h-8 bg-slate-800 rounded flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                         </svg>
                       </div>
-                      <span className="text-xs text-blue-400 font-medium uppercase">Quiz</span>
+                      <span className="text-xs text-slate-400 font-medium uppercase">Quiz</span>
                     </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteQuiz(quiz.id);
                       }}
-                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition p-1"
+                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 transition p-1"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -2929,7 +2980,7 @@ export default function PracticePage() {
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-blue-500 transition-all"
+                          className="h-full bg-white transition-all"
                           style={{ width: `${quiz.best_score}%` }}
                         />
                       </div>
@@ -2948,19 +2999,19 @@ export default function PracticePage() {
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 bg-purple-500/20 rounded flex items-center justify-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div className="w-8 h-8 bg-slate-800 rounded flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                         </svg>
                       </div>
-                      <span className="text-xs text-purple-400 font-medium uppercase">Flashcards</span>
+                      <span className="text-xs text-slate-400 font-medium uppercase">Flashcards</span>
                     </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteFlashcardSet(set.id);
                       }}
-                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition p-1"
+                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 transition p-1"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -2975,7 +3026,7 @@ export default function PracticePage() {
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-purple-500 transition-all"
+                          className="h-full bg-white transition-all"
                           style={{ width: `${Math.round((set.mastery_count / set.total_cards) * 100)}%` }}
                         />
                       </div>
