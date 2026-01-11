@@ -18,7 +18,10 @@ export type VoiceAction =
   | { type: 'REPEAT_ANSWERS' }
   | { type: 'SKIP_QUESTION' }
   | { type: 'READ_CURRENT_QUESTION' }
-  | { type: 'REPEAT_CARD' };
+  | { type: 'REPEAT_CARD' }
+  | { type: 'GET_HINT' }
+  | { type: 'ENABLE_READ_ALOUD_MODE' }
+  | { type: 'DISABLE_READ_ALOUD_MODE' };
 
 export interface VoiceNavbarRef {
   speakText: (text: string) => Promise<void>;
@@ -39,6 +42,7 @@ interface VoiceNavbarProps {
     currentCardIndex?: number;
     totalCards?: number;
     isFlipped?: boolean;
+    sourceMaterialIds?: string[]; // Material IDs for RAG hint retrieval
   };
   userId?: string;
   onAction?: (action: VoiceAction) => void;
@@ -277,6 +281,8 @@ const VoiceNavbar = forwardRef<VoiceNavbarRef, VoiceNavbarProps>(function VoiceN
       case 'SKIP_QUESTION': return { type: 'SKIP_QUESTION' };
       case 'READ_CURRENT_QUESTION': return { type: 'READ_CURRENT_QUESTION' };
       case 'REPEAT_CARD': return { type: 'REPEAT_CARD' };
+      case 'ENABLE_READ_ALOUD_MODE': return { type: 'ENABLE_READ_ALOUD_MODE' };
+      case 'DISABLE_READ_ALOUD_MODE': return { type: 'DISABLE_READ_ALOUD_MODE' };
       default: return null;
     }
   };
@@ -437,6 +443,19 @@ const VoiceNavbar = forwardRef<VoiceNavbarRef, VoiceNavbarProps>(function VoiceN
     }
   }, []);
 
+  // Generate a context-aware greeting from Cortana
+  const getGreeting = useCallback(() => {
+    if (context.viewMode === 'quiz' && !context.showResults) {
+      return `Hi, I'm Cortana. How can I help you with this quiz? Would you like me to read through the questions with you, or do you need a hint?`;
+    } else if (context.viewMode === 'quiz' && context.showResults) {
+      return `Hi, I'm Cortana. I see you've finished the quiz. Would you like me to help explain any questions you missed?`;
+    } else if (context.viewMode === 'flashcards') {
+      return `Hi, I'm Cortana. Ready to study flashcards? Let me know if you'd like me to read them aloud or if you need any help.`;
+    } else {
+      return `Hi, I'm Cortana. How can I help you study today?`;
+    }
+  }, [context.viewMode, context.showResults]);
+
   const connectDeepgram = useCallback(async () => {
     try {
       setError(null);
@@ -446,9 +465,13 @@ const VoiceNavbar = forwardRef<VoiceNavbarRef, VoiceNavbarProps>(function VoiceN
       const ws = new WebSocket(wsUrl, ['token', token]);
       wsRef.current = ws;
 
-      ws.onopen = () => {
+      ws.onopen = async () => {
         setIsConnected(true);
         startRecording();
+        // Cortana greets the user on connection
+        const greeting = getGreeting();
+        setLastResponse(greeting);
+        await speakText(greeting);
       };
 
       ws.onmessage = (event) => {
@@ -472,7 +495,7 @@ const VoiceNavbar = forwardRef<VoiceNavbarRef, VoiceNavbarProps>(function VoiceN
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect');
     }
-  }, [startRecording, handleTranscriptResult, processUserSpeech]);
+  }, [startRecording, handleTranscriptResult, processUserSpeech, speakText, getGreeting]);
 
   const toggleConnection = useCallback(() => {
     if (isConnected) {
@@ -496,14 +519,6 @@ const VoiceNavbar = forwardRef<VoiceNavbarRef, VoiceNavbarProps>(function VoiceN
 
   const colors = getColors();
 
-  const getStatusText = () => {
-    if (error) return error;
-    if (isListening) return "Listening...";
-    if (isSpeaking) return "Speaking...";
-    if (isConnected) return "Ready";
-    return "";
-  };
-
   return (
     <div
       className="fixed top-0 left-0 right-0 z-50 flex items-center justify-center px-6 py-4"
@@ -512,26 +527,7 @@ const VoiceNavbar = forwardRef<VoiceNavbarRef, VoiceNavbarProps>(function VoiceN
         transition: "transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)",
       }}
     >
-      {/* Left side - Status and transcript (absolute positioned) */}
-      <div className="absolute left-6 flex items-center gap-3 min-w-0">
-        {(isConnected || error) && (
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full transition-colors ${
-              isConnected ? (isListening ? 'bg-red-500 animate-pulse' : isSpeaking ? 'bg-purple-500 animate-pulse' : 'bg-green-500') : 'bg-slate-600'
-            }`} />
-            {getStatusText() && (
-              <span className="text-sm text-slate-400 whitespace-nowrap">{getStatusText()}</span>
-            )}
-          </div>
-        )}
-        {currentTranscript && (
-          <p className="text-sm text-white truncate max-w-[200px]" title={currentTranscript}>
-            "{currentTranscript}"
-          </p>
-        )}
-      </div>
-
-      {/* Center - Visualizer */}
+      {/* Center - Visualizer only */}
       <div
         className="flex items-center justify-center cursor-pointer"
         onClick={toggleConnection}
@@ -554,15 +550,6 @@ const VoiceNavbar = forwardRef<VoiceNavbarRef, VoiceNavbarProps>(function VoiceN
             );
           })}
         </div>
-      </div>
-
-      {/* Right side - Last response (absolute positioned) */}
-      <div className="absolute right-6 flex items-center gap-4 min-w-0">
-        {lastResponse && (
-          <p className="text-sm text-slate-300 truncate max-w-[250px]" title={lastResponse}>
-            {lastResponse.slice(0, 60)}{lastResponse.length > 60 ? '...' : ''}
-          </p>
-        )}
       </div>
     </div>
   );

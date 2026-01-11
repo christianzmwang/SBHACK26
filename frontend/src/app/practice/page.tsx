@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
-import VoiceAgent, { type VoiceAction, type VoiceAgentRef } from "@/app/components/VoiceAgent";
+import VoiceNavbar, { type VoiceAction, type VoiceNavbarRef } from "@/app/components/VoiceNavbar";
 import { useData } from "@/app/context/DataContext";
 import {
   foldersApi,
@@ -135,9 +135,9 @@ export default function PracticePage() {
   const [needsPracticeCards, setNeedsPracticeCards] = useState<Set<string>>(new Set());
   const [flashcardSessionSaved, setFlashcardSessionSaved] = useState(false);
 
-  // Voice Agent state
-  const [isVoiceAgentOpen, setIsVoiceAgentOpen] = useState(false);
-  const voiceAgentRef = useRef<VoiceAgentRef>(null);
+  // Voice Navbar state
+  const voiceNavbarRef = useRef<VoiceNavbarRef>(null);
+  const [readAloudMode, setReadAloudMode] = useState(false); // Cortana reads quiz aloud only when enabled
   const shouldAutoReadQuestionRef = useRef(false);
   const shouldAutoReadCardRef = useRef(false);
   const shouldAutoAdvanceRef = useRef(false);
@@ -195,24 +195,6 @@ export default function PracticePage() {
   // Load data effect removed - handled by DataProvider
 
 
-  // Keyboard shortcut for voice agent (V key)
-  useEffect(() => {
-    const handleKeyPress = (e: KeyboardEvent) => {
-      // Only trigger if not typing in an input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
-      
-      // Press 'V' to open voice agent
-      if (e.key === 'v' || e.key === 'V') {
-        e.preventDefault();
-        setIsVoiceAgentOpen(prev => !prev);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
-  }, []);
 
   // Load topic analysis when user ID is available
   useEffect(() => {
@@ -299,84 +281,87 @@ export default function PracticePage() {
     }
   }, [viewMode, materialFolders, sectionStructures, loadingStructures]);
 
-  // Auto-read first question/card when entering quiz/flashcard mode with voice agent open
+  // Track view mode changes (but don't auto-read - Cortana will ask first)
   const prevViewModeRef = useRef<ViewMode>(viewMode);
   useEffect(() => {
-    const prevViewMode = prevViewModeRef.current;
     prevViewModeRef.current = viewMode;
+    // Reset read-aloud mode when changing views
+    setReadAloudMode(false);
+  }, [viewMode]);
 
-    // If we just entered quiz mode and voice agent is open, read the first question
-    if (viewMode === 'quiz' && prevViewMode !== 'quiz' && isVoiceAgentOpen && !showResults) {
+  // When readAloudMode is enabled, start reading the current question/card
+  useEffect(() => {
+    if (!readAloudMode) return;
+
+    if (viewMode === 'quiz' && !showResults) {
       const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
-      if (questions.length > 0 && voiceAgentRef.current) {
-        // Small delay to let the UI settle
+      if (questions.length > 0 && voiceNavbarRef.current) {
         setTimeout(async () => {
           const quizName = generatedQuiz?.name || activeQuiz?.name || 'your quiz';
-          await voiceAgentRef.current?.speakText(`Starting ${quizName} with ${questions.length} questions. Let's begin.`);
+          await voiceNavbarRef.current?.speakText(`Okay! Starting ${quizName} with ${questions.length} questions. Let's begin.`);
           // Then read the first question
           setTimeout(() => {
-            const currentQuestion = questions[0];
-            if (currentQuestion && voiceAgentRef.current) {
-              const questionText = `Question 1 of ${questions.length}. ${currentQuestion.question}`;
+            const currentQuestion = questions[currentQuestionIndex];
+            if (currentQuestion && voiceNavbarRef.current) {
+              const questionText = `Question ${currentQuestionIndex + 1} of ${questions.length}. ${currentQuestion.question}`;
               const answersText = currentQuestion.options
                 ? Object.entries(currentQuestion.options).map(([k, v]) => `${k}: ${v}`).join('. ')
                 : '';
-              voiceAgentRef.current.speakText(`${questionText} The options are: ${answersText}`);
+              voiceNavbarRef.current.speakText(`${questionText} The options are: ${answersText}`);
             }
           }, 500);
-        }, 500);
+        }, 300);
       }
-    }
-
-    // If we just entered flashcard mode and voice agent is open, read the first card
-    if (viewMode === 'flashcards' && prevViewMode !== 'flashcards' && isVoiceAgentOpen) {
+    } else if (viewMode === 'flashcards') {
       const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
-      if (cards.length > 0 && voiceAgentRef.current) {
+      if (cards.length > 0 && voiceNavbarRef.current) {
         setTimeout(async () => {
           const setName = generatedFlashcards?.name || activeFlashcardSet?.name || 'your flashcard set';
-          await voiceAgentRef.current?.speakText(`Starting ${setName} with ${cards.length} cards. Let's begin.`);
+          await voiceNavbarRef.current?.speakText(`Okay! Starting ${setName} with ${cards.length} cards. Let's begin.`);
           // Then read the first card
           setTimeout(() => {
-            const currentCard = cards[0];
-            if (currentCard && voiceAgentRef.current) {
+            const currentCard = cards[currentCardIndex];
+            if (currentCard && voiceNavbarRef.current) {
               const frontText = currentCard.front || currentCard.question || '';
-              voiceAgentRef.current.speakText(`Card 1 of ${cards.length}. ${frontText}`);
+              voiceNavbarRef.current.speakText(`Card ${currentCardIndex + 1} of ${cards.length}. ${frontText}`);
             }
           }, 500);
-        }, 500);
+        }, 300);
       }
     }
-  }, [viewMode, isVoiceAgentOpen, showResults, generatedQuiz, activeQuiz, generatedFlashcards, activeFlashcardSet]);
+  }, [readAloudMode]); // Only trigger when readAloudMode changes to true
 
-  // Auto-read question when currentQuestionIndex changes (for hands-free navigation)
+  // Auto-read question when currentQuestionIndex changes
+  // Works when: readAloudMode is enabled OR when triggered by voice answer (hands-free)
   useEffect(() => {
-    if (shouldAutoReadQuestionRef.current && isVoiceAgentOpen && viewMode === 'quiz' && !showResults) {
+    if (shouldAutoReadQuestionRef.current && viewMode === 'quiz' && !showResults) {
       shouldAutoReadQuestionRef.current = false;
       const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
       const currentQuestion = questions[currentQuestionIndex];
-      if (currentQuestion && voiceAgentRef.current) {
+      if (currentQuestion && voiceNavbarRef.current) {
         // Stop any ongoing speech before reading new question
-        voiceAgentRef.current.stopSpeaking();
+        voiceNavbarRef.current.stopSpeaking();
         setTimeout(() => {
           const questionText = `Question ${currentQuestionIndex + 1} of ${questions.length}. ${currentQuestion.question}`;
           const answersText = currentQuestion.options
             ? Object.entries(currentQuestion.options).map(([k, v]) => `${k}: ${v}`).join('. ')
             : '';
-          voiceAgentRef.current?.speakText(`${questionText} The options are: ${answersText}`);
+          voiceNavbarRef.current?.speakText(`${questionText} The options are: ${answersText}`);
         }, 300);
       }
     }
-  }, [currentQuestionIndex, isVoiceAgentOpen, viewMode, showResults, generatedQuiz, activeQuiz]);
+  }, [currentQuestionIndex, viewMode, showResults, generatedQuiz, activeQuiz]);
 
-  // Auto-read card when currentCardIndex or isFlipped changes (for hands-free navigation)
+  // Auto-read card when currentCardIndex or isFlipped changes
+  // Works when triggered by voice navigation (hands-free)
   useEffect(() => {
-    if (shouldAutoReadCardRef.current && isVoiceAgentOpen && viewMode === 'flashcards') {
+    if (shouldAutoReadCardRef.current && viewMode === 'flashcards') {
       shouldAutoReadCardRef.current = false;
       const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
       const currentCard = cards[currentCardIndex];
-      if (currentCard && voiceAgentRef.current) {
+      if (currentCard && voiceNavbarRef.current) {
         // Stop any ongoing speech before reading new card
-        voiceAgentRef.current.stopSpeaking();
+        voiceNavbarRef.current.stopSpeaking();
         setTimeout(() => {
           const cardNumber = currentCardIndex + 1;
           const totalCards = cards.length;
@@ -384,17 +369,17 @@ export default function PracticePage() {
           if (!isFlipped) {
             const frontText = currentCard.front || currentCard.question || '';
             const text = `Card ${cardNumber} of ${totalCards}. ${frontText}`;
-            voiceAgentRef.current?.speakText(text);
+            voiceNavbarRef.current?.speakText(text);
           } else {
             const backText = currentCard.back || currentCard.explanation || '';
             const topicText = currentCard.topic ? ` Topic: ${currentCard.topic}.` : '';
             const text = `Answer: ${backText}.${topicText}`;
-            voiceAgentRef.current?.speakText(text);
+            voiceNavbarRef.current?.speakText(text);
           }
         }, 300);
       }
     }
-  }, [currentCardIndex, isFlipped, isVoiceAgentOpen, viewMode, generatedFlashcards, activeFlashcardSet]);
+  }, [currentCardIndex, isFlipped, viewMode, generatedFlashcards, activeFlashcardSet]);
 
   // Submit quiz handler - defined before useEffects that depend on it
   const handleSubmitQuiz = useCallback(async () => {
@@ -461,8 +446,8 @@ export default function PracticePage() {
 
       if (nextUnanswered === -1) {
         // All questions answered - submit the quiz
-        if (voiceAgentRef.current && isVoiceAgentOpen) {
-          voiceAgentRef.current.speakText("All questions answered. Submitting your quiz.").then(() => {
+        if (voiceNavbarRef.current) {
+          voiceNavbarRef.current.speakText("All questions answered. Submitting your quiz.").then(() => {
             handleSubmitQuiz();
           });
         } else {
@@ -474,7 +459,7 @@ export default function PracticePage() {
         setCurrentQuestionIndex(nextUnanswered);
       }
     }
-  }, [selectedAnswers, viewMode, showResults, currentQuestionIndex, generatedQuiz, activeQuiz, isVoiceAgentOpen, handleSubmitQuiz]);
+  }, [selectedAnswers, viewMode, showResults, currentQuestionIndex, generatedQuiz, activeQuiz, handleSubmitQuiz]);
 
   // Load specific quiz or flashcard set
   const loadQuiz = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
@@ -1487,10 +1472,10 @@ export default function PracticePage() {
   const readCurrentCard = useCallback(async () => {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     const currentCard = cards[currentCardIndex];
-    if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    if (!currentCard || !voiceNavbarRef.current) return;
 
     // Stop any ongoing speech before reading new card
-    voiceAgentRef.current.stopSpeaking();
+    voiceNavbarRef.current.stopSpeaking();
 
     const cardNumber = currentCardIndex + 1;
     const totalCards = cards.length;
@@ -1499,65 +1484,61 @@ export default function PracticePage() {
       // Read the front of the card
       const frontText = currentCard.front || currentCard.question || '';
       const text = `Card ${cardNumber} of ${totalCards}. ${frontText}`;
-      await voiceAgentRef.current.speakText(text);
+      await voiceNavbarRef.current.speakText(text);
     } else {
       // Read the back of the card
       const backText = currentCard.back || currentCard.explanation || '';
       const topicText = currentCard.topic ? ` Topic: ${currentCard.topic}.` : '';
       const text = `Answer: ${backText}.${topicText}`;
-      await voiceAgentRef.current.speakText(text);
+      await voiceNavbarRef.current.speakText(text);
     }
-  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isFlipped, isVoiceAgentOpen]);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isFlipped]);
 
   // Read just the front of the current card
   const readCardFront = useCallback(async () => {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     const currentCard = cards[currentCardIndex];
-    if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    if (!currentCard || !voiceNavbarRef.current) return;
 
     // Stop any ongoing speech before reading
-    voiceAgentRef.current.stopSpeaking();
+    voiceNavbarRef.current.stopSpeaking();
 
     const frontText = currentCard.front || currentCard.question || '';
-    await voiceAgentRef.current.speakText(frontText);
-  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+    await voiceNavbarRef.current.speakText(frontText);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex]);
 
   // Read just the back of the current card
   const readCardBack = useCallback(async () => {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     const currentCard = cards[currentCardIndex];
-    if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    if (!currentCard || !voiceNavbarRef.current) return;
 
     // Stop any ongoing speech before reading
-    voiceAgentRef.current.stopSpeaking();
+    voiceNavbarRef.current.stopSpeaking();
 
     const backText = currentCard.back || currentCard.explanation || '';
-    await voiceAgentRef.current.speakText(backText);
-  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+    await voiceNavbarRef.current.speakText(backText);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex]);
 
   // Flashcard navigation
   const handleNextCard = useCallback(() => {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     if (currentCardIndex < cards.length - 1) {
       setIsFlipped(false);
-      // Flag for auto-read if voice agent is open (hands-free mode)
-      if (isVoiceAgentOpen) {
-        shouldAutoReadCardRef.current = true;
-      }
+      // Flag for auto-read (hands-free mode)
+      shouldAutoReadCardRef.current = true;
       setCurrentCardIndex(prev => prev + 1);
     }
-  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex]);
 
   const handlePrevCard = useCallback(() => {
     if (currentCardIndex > 0) {
       setIsFlipped(false);
-      // Flag for auto-read if voice agent is open (hands-free mode)
-      if (isVoiceAgentOpen) {
-        shouldAutoReadCardRef.current = true;
-      }
+      // Flag for auto-read (hands-free mode)
+      shouldAutoReadCardRef.current = true;
       setCurrentCardIndex(prev => prev - 1);
     }
-  }, [currentCardIndex, isVoiceAgentOpen]);
+  }, [currentCardIndex]);
 
   // Mark current card as mastered and move to next
   const handleMarkMastered = useCallback(() => {
@@ -1581,12 +1562,10 @@ export default function PracticePage() {
     // Move to next card
     if (currentCardIndex < cards.length - 1) {
       setIsFlipped(false);
-      if (isVoiceAgentOpen) {
-        shouldAutoReadCardRef.current = true;
-      }
+      shouldAutoReadCardRef.current = true;
       setCurrentCardIndex(prev => prev + 1);
     }
-  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex]);
 
   // Mark current card as needs practice and move to next
   const handleMarkNeedsPractice = useCallback(() => {
@@ -1610,12 +1589,10 @@ export default function PracticePage() {
     // Move to next card
     if (currentCardIndex < cards.length - 1) {
       setIsFlipped(false);
-      if (isVoiceAgentOpen) {
-        shouldAutoReadCardRef.current = true;
-      }
+      shouldAutoReadCardRef.current = true;
       setCurrentCardIndex(prev => prev + 1);
     }
-  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex]);
 
   // Save flashcard session when all cards have been reviewed
   const saveFlashcardSession = useCallback(async () => {
@@ -1708,43 +1685,43 @@ export default function PracticePage() {
   const readCurrentQuestion = useCallback(async () => {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
     const currentQuestion = questions[currentQuestionIndex];
-    if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    if (!currentQuestion || !voiceNavbarRef.current) return;
 
     // Stop any ongoing speech before reading new question
-    voiceAgentRef.current.stopSpeaking();
+    voiceNavbarRef.current.stopSpeaking();
 
     const questionText = formatQuestionForVoice(currentQuestion, currentQuestionIndex + 1, questions.length);
     const answersText = formatAnswersForVoice(currentQuestion);
     const fullText = `${questionText} ${answersText}`;
 
-    await voiceAgentRef.current.speakText(fullText);
-  }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatQuestionForVoice, formatAnswersForVoice]);
+    await voiceNavbarRef.current.speakText(fullText);
+  }, [generatedQuiz, activeQuiz, currentQuestionIndex, formatQuestionForVoice, formatAnswersForVoice]);
 
   // Read just the question
   const readQuestionOnly = useCallback(async () => {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
     const currentQuestion = questions[currentQuestionIndex];
-    if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    if (!currentQuestion || !voiceNavbarRef.current) return;
 
     // Stop any ongoing speech before reading
-    voiceAgentRef.current.stopSpeaking();
+    voiceNavbarRef.current.stopSpeaking();
 
     const questionText = formatQuestionForVoice(currentQuestion, currentQuestionIndex + 1, questions.length);
-    await voiceAgentRef.current.speakText(questionText);
-  }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatQuestionForVoice]);
+    await voiceNavbarRef.current.speakText(questionText);
+  }, [generatedQuiz, activeQuiz, currentQuestionIndex, formatQuestionForVoice]);
 
   // Read just the answers
   const readAnswersOnly = useCallback(async () => {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
     const currentQuestion = questions[currentQuestionIndex];
-    if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    if (!currentQuestion || !voiceNavbarRef.current) return;
 
     // Stop any ongoing speech before reading
-    voiceAgentRef.current.stopSpeaking();
+    voiceNavbarRef.current.stopSpeaking();
 
     const answersText = formatAnswersForVoice(currentQuestion);
-    await voiceAgentRef.current.speakText(answersText);
-  }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatAnswersForVoice]);
+    await voiceNavbarRef.current.speakText(answersText);
+  }, [generatedQuiz, activeQuiz, currentQuestionIndex, formatAnswersForVoice]);
 
   // Find next unanswered question index (returns -1 if all answered)
   const findNextUnansweredQuestion = useCallback((startIndex: number): number => {
@@ -1790,8 +1767,8 @@ export default function PracticePage() {
 
     if (nextUnanswered === -1) {
       // All questions answered - submit the quiz
-      if (voiceAgentRef.current && isVoiceAgentOpen) {
-        await voiceAgentRef.current.speakText("All questions answered. Submitting your quiz.");
+      if (voiceNavbarRef.current) {
+        await voiceNavbarRef.current.speakText("All questions answered. Submitting your quiz.");
       }
       handleSubmitQuiz();
     } else {
@@ -1799,7 +1776,7 @@ export default function PracticePage() {
       shouldAutoReadQuestionRef.current = true;
       setCurrentQuestionIndex(nextUnanswered);
     }
-  }, [findNextUnansweredQuestion, currentQuestionIndex, isVoiceAgentOpen, handleSubmitQuiz]);
+  }, [findNextUnansweredQuestion, currentQuestionIndex, handleSubmitQuiz]);
 
   // Render folder tree item for generation
   const renderFolderTree = (folder: Folder, depth = 0) => {
@@ -2188,7 +2165,7 @@ export default function PracticePage() {
   };
 
   // Build context for voice agent
-  const getVoiceAgentContext = () => {
+  const getVoiceContext = () => {
     const baseContext: any = {
       viewMode,
     };
@@ -2204,6 +2181,8 @@ export default function PracticePage() {
       baseContext.userAnswer = selectedAnswers[currentQuestionId];
       baseContext.showResults = showResults;
       baseContext.quizName = generatedQuiz?.name || activeQuiz?.name || 'Quiz';
+      // Include source material IDs for RAG hint retrieval (if available in quiz metadata)
+      baseContext.sourceMaterialIds = (generatedQuiz as any)?.materialIds || (activeQuiz as any)?.material_ids || [];
       
       if (showResults) {
         baseContext.score = calculateScore();
@@ -2264,6 +2243,8 @@ export default function PracticePage() {
       baseContext.currentCardIndex = currentCardIndex;
       baseContext.totalCards = cards.length;
       baseContext.isFlipped = isFlipped;
+      // Include source material IDs for RAG hint retrieval (if available in flashcard metadata)
+      baseContext.sourceMaterialIds = (generatedFlashcards as any)?.materialIds || (activeFlashcardSet as any)?.material_ids || [];
     } else if (viewMode === 'overview' && practiceOverview) {
       baseContext.stats = {
         totalQuizzes: practiceOverview.quizzes.length,
@@ -2275,7 +2256,7 @@ export default function PracticePage() {
     return baseContext;
   };
 
-  // Handle voice actions from VoiceAgent
+  // Handle voice actions from VoiceNavbar
   const handleVoiceAction = useCallback(async (action: VoiceAction) => {
     console.log('Handling voice action:', action);
 
@@ -2372,14 +2353,19 @@ export default function PracticePage() {
               // Record the answer immediately
               handleSelectAnswer(questionId, answer);
 
-              // Announce the selection
-              if (voiceAgentRef.current && isVoiceAgentOpen) {
-                const optionText = currentQuestion.options?.[answer as keyof typeof currentQuestion.options] || answer;
-                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`);
+              // Announce the selection briefly, then advance
+              // The auto-advance effect will handle moving to next question and reading it
+              if (voiceNavbarRef.current) {
+                // Short confirmation - just the letter for faster flow
+                voiceNavbarRef.current.speakText(`${answer}.`).then(() => {
+                  // After confirmation finishes, trigger auto-advance
+                  shouldAutoAdvanceRef.current = true;
+                  // Force a re-render to trigger the effect
+                  setSelectedAnswers(prev => ({ ...prev }));
+                });
+              } else {
+                shouldAutoAdvanceRef.current = true;
               }
-
-              // Set flag to auto-advance after state updates
-              shouldAutoAdvanceRef.current = true;
             }
           }
         }
@@ -2388,10 +2374,8 @@ export default function PracticePage() {
 
       case 'NEXT_QUESTION': {
         if (viewMode === 'quiz' && !showResults) {
-          // Flag for auto-read after navigation if voice agent is open
-          if (isVoiceAgentOpen) {
-            shouldAutoReadQuestionRef.current = true;
-          }
+          // Flag for auto-read after navigation
+          shouldAutoReadQuestionRef.current = true;
           handleNextQuestion();
         }
         break;
@@ -2413,10 +2397,8 @@ export default function PracticePage() {
 
       case 'FLIP_CARD': {
         if (viewMode === 'flashcards') {
-          // Flag for auto-read after flipping if voice agent is open
-          if (isVoiceAgentOpen) {
-            shouldAutoReadCardRef.current = true;
-          }
+          // Flag for auto-read after flipping
+          shouldAutoReadCardRef.current = true;
           setIsFlipped(prev => !prev);
         }
         break;
@@ -2452,10 +2434,8 @@ export default function PracticePage() {
           const targetIndex = action.params.questionNumber - 1;
           const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
           if (targetIndex >= 0 && targetIndex < questions.length) {
-            // Flag for auto-read after navigation if voice agent is open
-            if (isVoiceAgentOpen) {
-              shouldAutoReadQuestionRef.current = true;
-            }
+            // Flag for auto-read after navigation
+            shouldAutoReadQuestionRef.current = true;
             setCurrentQuestionIndex(targetIndex);
           }
         }
@@ -2484,12 +2464,12 @@ export default function PracticePage() {
 
           if (nextUnanswered === -1 || nextUnanswered === currentQuestionIndex) {
             // No other unanswered questions or only current is unanswered
-            if (voiceAgentRef.current && isVoiceAgentOpen) {
-              voiceAgentRef.current.speakText("This is the only unanswered question. Please answer or submit the quiz.");
+            if (voiceNavbarRef.current) {
+              voiceNavbarRef.current.speakText("This is the only unanswered question. Please answer or submit the quiz.");
             }
           } else {
-            if (voiceAgentRef.current && isVoiceAgentOpen) {
-              voiceAgentRef.current.speakText("Skipping to the next question.").then(() => {
+            if (voiceNavbarRef.current) {
+              voiceNavbarRef.current.speakText("Skipping to the next question.").then(() => {
                 // Flag for auto-read after the skip message finishes
                 shouldAutoReadQuestionRef.current = true;
                 setCurrentQuestionIndex(nextUnanswered);
@@ -2509,6 +2489,21 @@ export default function PracticePage() {
         break;
       }
 
+      case 'ENABLE_READ_ALOUD_MODE': {
+        // User asked Cortana to read through the quiz/flashcards with them
+        setReadAloudMode(true);
+        break;
+      }
+
+      case 'DISABLE_READ_ALOUD_MODE': {
+        // User wants Cortana to stop reading aloud
+        setReadAloudMode(false);
+        if (voiceNavbarRef.current) {
+          voiceNavbarRef.current.stopSpeaking();
+        }
+        break;
+      }
+
       default:
         console.log('Unknown voice action:', action);
     }
@@ -2516,7 +2511,7 @@ export default function PracticePage() {
     viewMode, showResults, currentQuestionIndex, generatedQuiz, activeQuiz,
     userId, handleSelectAnswer, handleNextQuestion, handlePrevQuestion,
     handleSubmitQuiz, handleNextCard, handlePrevCard, handleResetQuiz,
-    handleResetFlashcards, refreshPracticeOverview, isVoiceAgentOpen,
+    handleResetFlashcards, refreshPracticeOverview,
     readCurrentQuestion, readAnswersOnly, moveToNextOrSubmit, findNextUnansweredQuestion,
     readCurrentCard
   ]);
@@ -2679,26 +2674,11 @@ export default function PracticePage() {
 
     if (showResults) {
       return (
-        <div className={`h-full overflow-auto -mt-4 transition-all duration-300 ${isVoiceAgentOpen ? 'mr-[400px]' : ''}`}>
-          {/* Voice Agent Button - Overlaid on bottom nav */}
-          {!isVoiceAgentOpen && (
-            <button
-              onClick={() => setIsVoiceAgentOpen(true)}
-              className="fixed bottom-4 right-6 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
-              aria-label="Open voice assistant"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-              </svg>
-            </button>
-          )}
-
-          <VoiceAgent
-            ref={voiceAgentRef}
-            context={getVoiceAgentContext()}
+        <div className="h-full overflow-auto -mt-4">
+          <VoiceNavbar
+            ref={voiceNavbarRef}
+            context={getVoiceContext()}
             userId={userId}
-            isOpen={isVoiceAgentOpen}
-            onClose={() => setIsVoiceAgentOpen(false)}
             onAction={handleVoiceAction}
           />
 
@@ -2825,24 +2805,11 @@ export default function PracticePage() {
     };
 
     return (
-      <div className={`flex flex-col overflow-hidden transition-all duration-300 ${isVoiceAgentOpen ? 'mr-[400px]' : ''}`}>
-        {/* Voice Agent Button - Overlaid on bottom nav */}
-        <button
-          onClick={() => setIsVoiceAgentOpen(true)}
-          className={`fixed bottom-4 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group ${isVoiceAgentOpen ? 'right-[424px]' : 'right-6'}`}
-          aria-label="Open voice assistant"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-          </svg>
-        </button>
-
-        <VoiceAgent
-          ref={voiceAgentRef}
-          context={getVoiceAgentContext()}
+      <div className="flex flex-col overflow-hidden">
+        <VoiceNavbar
+          ref={voiceNavbarRef}
+          context={getVoiceContext()}
           userId={userId}
-          isOpen={isVoiceAgentOpen}
-          onClose={() => setIsVoiceAgentOpen(false)}
           onAction={handleVoiceAction}
         />
 
@@ -3187,24 +3154,11 @@ export default function PracticePage() {
     }
 
     return (
-      <div className={`h-full overflow-auto -mt-4 transition-all duration-300 ${isVoiceAgentOpen ? 'mr-[400px]' : ''}`}>
-        {/* Voice Agent Button - Overlaid on bottom nav */}
-        <button
-          onClick={() => setIsVoiceAgentOpen(true)}
-          className={`fixed bottom-4 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group ${isVoiceAgentOpen ? 'right-[424px]' : 'right-6'}`}
-          aria-label="Open voice assistant"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-          </svg>
-        </button>
-
-        <VoiceAgent
-          ref={voiceAgentRef}
-          context={getVoiceAgentContext()}
+      <div className="h-full overflow-auto -mt-4">
+        <VoiceNavbar
+          ref={voiceNavbarRef}
+          context={getVoiceContext()}
           userId={userId}
-          isOpen={isVoiceAgentOpen}
-          onClose={() => setIsVoiceAgentOpen(false)}
           onAction={handleVoiceAction}
         />
 

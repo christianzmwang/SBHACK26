@@ -1,8 +1,150 @@
 import express from 'express';
 import { streamChatCompletion, chatCompletion } from '../services/llmService.js';
 import { query } from '../config/database.js';
+import { retrieveRelevantChunks } from '../services/ragRetriever.js';
 
 const router = express.Router();
+
+// =====================
+// HINT HANDLER WITH RAG
+// =====================
+
+/**
+ * Handle hint requests by retrieving relevant content using RAG
+ * and generating a helpful hint without giving away the answer
+ */
+async function handleHintRequest(res, context, userId, transcript) {
+  try {
+    let questionText = '';
+    let topicContext = '';
+    let materialIds = [];
+
+    // Extract the question/card content for RAG search
+    if (context?.viewMode === 'quiz' && context?.currentQuestion) {
+      const q = context.currentQuestion;
+      questionText = q.question;
+      topicContext = q.topic || '';
+      
+      // Get material IDs from the quiz context if available
+      if (context.sourceMaterialIds) {
+        materialIds = context.sourceMaterialIds;
+      }
+    } else if (context?.viewMode === 'flashcards' && context?.currentCard) {
+      const card = context.currentCard;
+      questionText = card.front || card.question;
+      topicContext = card.topic || '';
+      
+      if (context.sourceMaterialIds) {
+        materialIds = context.sourceMaterialIds;
+      }
+    }
+
+    // If we don't have specific material IDs, try to get user's materials
+    if (materialIds.length === 0 && userId) {
+      try {
+        const materialsResult = await query(`
+          SELECT m.id FROM materials m
+          JOIN folder_sections fs ON fs.id = m.section_id
+          JOIN folders f ON f.id = fs.folder_id
+          WHERE f.user_id = $1
+          LIMIT 50
+        `, [userId]);
+        materialIds = materialsResult.rows.map(r => r.id);
+      } catch (err) {
+        console.error('Error fetching user materials for hint:', err);
+      }
+    }
+
+    // Build search query combining question and user's request
+    const searchQuery = `${questionText} ${topicContext} ${transcript}`.trim();
+    
+    // Retrieve relevant content chunks using RAG
+    let relevantChunks = [];
+    if (searchQuery && materialIds.length > 0) {
+      try {
+        relevantChunks = await retrieveRelevantChunks(searchQuery, {
+          materialIds,
+          topK: 5,
+          similarityThreshold: 0.4,
+          includeContent: true
+        });
+        console.log(`Found ${relevantChunks.length} relevant chunks for hint`);
+      } catch (err) {
+        console.error('RAG retrieval error for hint:', err);
+      }
+    }
+
+    // Build the hint prompt with retrieved context
+    let hintPrompt = `You are Cortana, a helpful and friendly AI study tutor. The student is asking for help with a question.
+
+IMPORTANT RULES:
+1. DO NOT give the answer directly
+2. Provide a helpful hint that guides them toward understanding
+3. Explain relevant concepts that help them figure it out
+4. Be encouraging and supportive - you're their study buddy!
+5. Keep responses concise (1-3 sentences for voice)
+
+`;
+
+    if (context?.viewMode === 'quiz' && context?.currentQuestion) {
+      const q = context.currentQuestion;
+      hintPrompt += `CURRENT QUESTION: ${q.question}\n`;
+      if (q.options) {
+        hintPrompt += `OPTIONS:\n`;
+        Object.entries(q.options).forEach(([key, value]) => {
+          hintPrompt += `  ${key}. ${value}\n`;
+        });
+      }
+      // Include the correct answer so the AI knows what to hint toward (but not reveal)
+      if (q.correct_answer) {
+        hintPrompt += `\n[HIDDEN - The correct answer is ${q.correct_answer}, but DO NOT reveal this. Guide the student toward understanding why this is correct.]\n`;
+      }
+    } else if (context?.viewMode === 'flashcards' && context?.currentCard) {
+      const card = context.currentCard;
+      hintPrompt += `FLASHCARD FRONT: ${card.front || card.question}\n`;
+      if (context.isFlipped) {
+        hintPrompt += `FLASHCARD BACK: ${card.back || card.explanation}\n`;
+      } else {
+        hintPrompt += `[The card is not flipped yet - help them think about the answer]\n`;
+        if (card.back || card.explanation) {
+          hintPrompt += `[HIDDEN - The answer is: ${card.back || card.explanation}. Guide them toward this without revealing it.]\n`;
+        }
+      }
+    }
+
+    // Add retrieved content as context
+    if (relevantChunks.length > 0) {
+      hintPrompt += `\n=== RELEVANT STUDY MATERIAL (use this to give an informed hint) ===\n`;
+      relevantChunks.forEach((chunk, idx) => {
+        hintPrompt += `\n[Source: ${chunk.material_title}]\n${chunk.content}\n`;
+      });
+      hintPrompt += `\n=== END OF STUDY MATERIAL ===\n`;
+    }
+
+    hintPrompt += `\nStudent's request: "${transcript}"\n\nProvide a helpful hint:`;
+
+    // Stream the hint response
+    const messages = [
+      { role: 'system', content: hintPrompt },
+      { role: 'user', content: transcript }
+    ];
+
+    let fullResponse = '';
+    
+    for await (const chunk of streamChatCompletion(messages, { temperature: 0.7 })) {
+      fullResponse += chunk;
+      res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
+    }
+
+    res.write(`data: ${JSON.stringify({ done: true, fullText: fullResponse })}\n\n`);
+    res.end();
+
+  } catch (error) {
+    console.error('Error handling hint request:', error);
+    res.write(`data: ${JSON.stringify({ error: 'Failed to generate hint' })}\n\n`);
+    res.end();
+  }
+}
 
 // =====================
 // VOICE COMMAND DETECTION
@@ -62,7 +204,10 @@ AVAILABLE ACTIONS:
 11. REPEAT_ANSWERS - User wants to hear the answer options read again
 12. SKIP_QUESTION - User wants to skip the current question and move to the next
 13. REPEAT_CARD - User wants to hear the current flashcard read again
-14. NONE - No specific action detected, just a conversational query
+14. GET_HINT - User wants a hint or help understanding the current question/concept
+15. ENABLE_READ_ALOUD_MODE - User wants Cortana to read through the quiz/flashcards with them
+16. DISABLE_READ_ALOUD_MODE - User wants Cortana to stop reading aloud automatically
+17. NONE - No specific action detected, just a conversational query
 
 CURRENT CONTEXT:
 - View Mode: ${context?.viewMode || 'overview'}
@@ -118,7 +263,12 @@ Important matching rules:
 - "exit", "quit", "stop", "leave" → EXIT_PRACTICE
 - "repeat", "repeat question", "say that again", "what was the question", "read question" → REPEAT_QUESTION (in quiz context)
 - "read the answers", "what are the options", "read options", "repeat answers" → REPEAT_ANSWERS (in quiz context)
+- "hint", "give me a hint", "help me", "I need help", "I don't know", "explain this", "what does this mean", "can you help", "I'm stuck", "clue" → GET_HINT (in quiz or flashcard context)
+- "read aloud", "go through with me", "read the quiz", "read the questions", "guide me through", "read it out", "say it out", "read through", "walk me through", "help me go through" → ENABLE_READ_ALOUD_MODE
+- "stop reading", "stop talking", "be quiet", "silence", "I'll read myself", "stop guiding" → DISABLE_READ_ALOUD_MODE
 - For ANSWER_QUESTION actions, leave conversationalResponse empty or null (the frontend handles the response)
+- For GET_HINT actions, leave conversationalResponse empty - the system will retrieve relevant material and generate a helpful hint
+- For ENABLE_READ_ALOUD_MODE, leave conversationalResponse empty - Cortana will announce starting read-aloud mode
 `;
 
   try {
@@ -256,16 +406,31 @@ router.post('/chat', async (req, res) => {
       }
 
       // For certain actions, don't generate LLM response (frontend handles it)
-      const silentActions = ['ANSWER_QUESTION', 'NEXT_QUESTION', 'PREV_QUESTION', 'NEXT_CARD', 'PREV_CARD', 'FLIP_CARD'];
+      const silentActions = ['ANSWER_QUESTION', 'NEXT_QUESTION', 'PREV_QUESTION', 'NEXT_CARD', 'PREV_CARD', 'FLIP_CARD', 'ENABLE_READ_ALOUD_MODE', 'DISABLE_READ_ALOUD_MODE'];
       if (silentActions.includes(intent.action)) {
         res.write(`data: ${JSON.stringify({ done: true, fullText: '' })}\n\n`);
         res.end();
         return;
       }
+
+      // Handle GET_HINT with RAG retrieval for better hints
+      if (intent.action === 'GET_HINT') {
+        await handleHintRequest(res, context, userId, transcript);
+        return;
+      }
+    }
+
+    // Check if this is a hint-like request even without high confidence action detection
+    const hintKeywords = ['hint', 'help', 'explain', 'stuck', 'don\'t know', 'don\'t understand', 'confused', 'what does', 'what is', 'how does', 'why'];
+    const isHintRequest = hintKeywords.some(kw => transcript.toLowerCase().includes(kw));
+    
+    if (isHintRequest && (context?.viewMode === 'quiz' || context?.viewMode === 'flashcards') && !context?.showResults) {
+      await handleHintRequest(res, context, userId, transcript);
+      return;
     }
 
     // Build system prompt based on context
-    let systemPrompt = `You are a helpful study assistant helping a student practice their course material. `;
+    let systemPrompt = `You are Cortana, a helpful and friendly AI study assistant. You help students practice their course material, answer questions, and provide encouragement. Always be supportive and educational. `;
     
     // Check for quiz results FIRST (before currentQuestion check)
     if (context?.viewMode === 'quiz' && context?.showResults) {
