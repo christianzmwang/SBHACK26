@@ -60,7 +60,7 @@ const getAllChunksForMaterials = async (materialIds) => {
     WHERE mc.material_id = ANY($1)
       AND mc.embedding IS NOT NULL
       AND mc.content IS NOT NULL
-      AND LENGTH(mc.content) > 100
+      AND LENGTH(mc.content) > 20
     ORDER BY mc.material_id, mc.chunk_index`,
     [materialIds]
   );
@@ -373,13 +373,14 @@ const clusterChunksByTopic = (chunks, numClusters = DEFAULT_CLUSTER_COUNT) => {
 const filterContentChunks = (chunks) => {
   return chunks.filter(c => {
     const content = (c.content || '').toLowerCase();
-    
+
     // Skip index entries or TOC
     const isIndex = content.includes('index') && (content.match(/\d+/g) || []).length > 10;
     const isTOC = content.includes('table of contents') || content.includes('contents\n');
     const isPageList = (content.match(/\b\d+\b/g) || []).length > 20;
-    const isTooShort = content.length < 100;
-    
+    // Reduced minimum from 100 to 50 chars to allow smaller content chunks
+    const isTooShort = content.length < 50;
+
     return !isIndex && !isTOC && !isPageList && !isTooShort;
   });
 };
@@ -397,8 +398,14 @@ const generateQuestionsForCluster = async (cluster, options) => {
     chapterInfo = null
   } = options;
 
-  // Filter chunks first
+  // Filter chunks first, but fall back to original if filtering removes everything
   let contentChunks = filterContentChunks(cluster.chunks);
+  
+  // Fallback: if filtering removed all chunks, use original chunks
+  if (contentChunks.length === 0 && cluster.chunks.length > 0) {
+    console.log(`[Cluster ${clusterIndex + 1}] Filtering removed all chunks, using original ${cluster.chunks.length} chunks`);
+    contentChunks = cluster.chunks.filter(c => c.content && c.content.length > 0);
+  }
 
   // Sort by similarity to centroid to find the most representative chunks for this topic
   if (cluster.centroid && contentChunks.length > 0) {
@@ -419,7 +426,7 @@ const generateQuestionsForCluster = async (cluster, options) => {
   
   if (contentChunks.length === 0) {
     const label = chapterInfo ? `Chapter ${chapterInfo.number}` : `Cluster ${clusterIndex + 1}`;
-    console.log(`[${label}] No valid content chunks, skipping`);
+    console.log(`[${label}] No valid content chunks available, skipping`);
     return { questions: [], error: 'No valid content chunks' };
   }
 

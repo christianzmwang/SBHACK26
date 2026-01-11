@@ -24,6 +24,7 @@ const PORT = process.env.PORT || 3001;
 // CORS configuration - allow multiple origins
 const allowedOrigins = [
   'http://localhost:3000',
+  'https://sbhack26.vercel.app',
   process.env.FRONTEND_URL,
 ].filter(Boolean); // Remove undefined/null values
 
