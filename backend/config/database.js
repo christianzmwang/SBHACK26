@@ -14,10 +14,12 @@ export const getPool = () => {
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : { rejectUnauthorized: false },
       max: 10, // Reduced from 20 to avoid hitting connection limits
       min: 2, // Keep minimum connections alive
-      idleTimeoutMillis: 60000, // Increased idle timeout
-      connectionTimeoutMillis: 15000, // 15s for cold starts
-      statement_timeout: 30000,
-      query_timeout: 30000,
+      idleTimeoutMillis: 30000, // Reduced idle timeout to close stale connections faster
+      connectionTimeoutMillis: 30000, // Increased to 30s for slower connections
+      statement_timeout: 60000, // Increased for long running queries
+      query_timeout: 60000, // Increased for long running queries
+      keepAlive: true, // Enable keep-alive to prevent connection drops
+      keepAliveInitialDelayMillis: 10000,
       allowExitOnIdle: false, // Keep pool alive
     };
 

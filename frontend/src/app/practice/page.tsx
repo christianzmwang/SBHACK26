@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import VoiceAgent from "@/app/components/VoiceAgent";
 import {
@@ -696,11 +696,11 @@ export default function PracticePage() {
   };
 
   // Quiz navigation
-  const handleSelectAnswer = (questionId: string, answer: string) => {
+  const handleSelectAnswer = useCallback((questionId: string, answer: string) => {
     // Ensure questionId is a string for consistent comparison
     const normalizedId = String(questionId);
     setSelectedAnswers(prev => ({ ...prev, [normalizedId]: answer }));
-  };
+  }, []);
 
   const handleNextQuestion = () => {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
@@ -747,6 +747,54 @@ export default function PracticePage() {
     // Go back to folder view if we came from there
     setViewMode(previousView === 'folder' ? 'folder' : 'overview');
   };
+
+  // Keyboard shortcuts for quiz options (1-4)
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      // Only trigger if not typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      
+      // Only applicable in quiz mode and when results are not shown
+      if (viewMode === 'quiz' && !showResults && (generatedQuiz || activeQuiz)) {
+        const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+        const currentQuestion = questions[currentQuestionIndex];
+        
+        if (!currentQuestion) return;
+        
+        // Map 1-4 keys to options
+        const keyMap: Record<string, string> = {
+          '1': 'A',
+          '2': 'B',
+          '3': 'C',
+          '4': 'D'
+        };
+        
+        const optionKey = keyMap[e.key];
+        if (optionKey) {
+          // Check if option exists for this question
+          let isValidOption = false;
+          
+          if (practiceMode === 'true_false') {
+             // In True/False mode, only A (True) and B (False) are valid
+             isValidOption = optionKey === 'A' || optionKey === 'B';
+          } else {
+             // In Multiple Choice, check if option exists in question options
+             isValidOption = currentQuestion.options && optionKey in currentQuestion.options;
+          }
+          
+          if (isValidOption) {
+             const questionId = currentQuestion.id ? String(currentQuestion.id) : `q-${currentQuestionIndex}`;
+             handleSelectAnswer(questionId, optionKey);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [viewMode, showResults, generatedQuiz, activeQuiz, currentQuestionIndex, practiceMode, handleSelectAnswer]);
 
   // Flashcard navigation
   const handleNextCard = () => {
@@ -1202,7 +1250,7 @@ export default function PracticePage() {
     };
 
     return (
-      <div className="h-full flex flex-col -mt-4 overflow-hidden">
+      <div className="flex flex-col overflow-hidden">
         {/* Voice Agent Button */}
         <button
           onClick={() => setIsVoiceAgentOpen(true)}
@@ -1222,8 +1270,8 @@ export default function PracticePage() {
 
         {/* Question Overview Modal */}
         {showQuestionOverview && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={() => setShowQuestionOverview(false)}>
-            <div className="bg-slate-900 border border-slate-700 p-4 max-w-xl w-full mx-4 max-h-[60vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowQuestionOverview(false)}>
+            <div className="bg-black/30 backdrop-blur-md border border-white/10 p-4 max-w-xl w-full mx-4 max-h-[60vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-3 flex-shrink-0">
                 <h2 className="text-sm font-semibold text-white">Question Overview</h2>
                 <button
@@ -1276,7 +1324,7 @@ export default function PracticePage() {
                   })}
                 </div>
               </div>
-              <div className="mt-3 pt-3 border-t border-slate-700 flex-shrink-0">
+              <div className="mt-3 pt-3 border-t border-white/10 flex-shrink-0">
                 <p className="text-slate-400 text-xs">
                   {Object.keys(selectedAnswers).length} of {questions.length} answered
                 </p>
@@ -1285,8 +1333,8 @@ export default function PracticePage() {
           </div>
         )}
 
-        <div className="w-full px-6 flex flex-col h-full overflow-hidden">
-          <div className="mb-3 flex items-center justify-between flex-shrink-0 pt-3">
+        <div className="w-full flex flex-col h-full overflow-hidden">
+          <div className="mb-2 flex items-center justify-between flex-shrink-0">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
                 {practiceMode === 'multiple_choice' ? 'Multiple Choice' : 'True/False'}
@@ -1306,17 +1354,19 @@ export default function PracticePage() {
             </button>
           </div>
 
-          <div className="h-1.5 bg-slate-800 mb-3 flex-shrink-0">
+          <div className="h-1.5 bg-slate-800 mb-4 flex-shrink-0">
             <div 
               className="h-full bg-indigo-600 transition-all"
               style={{ width: `${((currentQuestionIndex + 1) / questions.length) * 100}%` }}
             />
           </div>
 
-          <div className="border border-slate-800 bg-black p-4 flex-1 overflow-y-auto min-h-0">
-            <p className="text-base text-white mb-4">{currentQuestion?.question}</p>
+          <div className="border border-slate-800 bg-black p-4 sm:p-6 flex-1 overflow-y-auto min-h-0 flex flex-col mb-4">
+            <div className="flex items-center justify-center mb-4 sm:mb-6" style={{ minHeight: '4rem' }}>
+              <p className="text-base text-white leading-relaxed text-center line-clamp-3">{currentQuestion?.question}</p>
+            </div>
             
-            <div className="space-y-2">
+            <div className="space-y-2 flex-1">
               {currentQuestion?.options && Object.entries(currentQuestion.options).map(([key, value]) => {
                 // Ensure consistent ID handling
                 const currentQuestionId = currentQuestion.id ? String(currentQuestion.id) : `q-${currentQuestionIndex}`;
@@ -1338,7 +1388,7 @@ export default function PracticePage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between flex-shrink-0 py-3">
+          <div className="flex items-center justify-between flex-shrink-0 pt-2">
             <button
               onClick={handlePrevQuestion}
               disabled={currentQuestionIndex === 0}
