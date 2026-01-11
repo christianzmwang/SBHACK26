@@ -8,7 +8,7 @@ import {
   type MaterialSection,
   type FileItem,
   type FileWarning,
-  type ContentStructure
+  type SectionStructure
 } from "@/lib/api";
 
 // Helper to format file size
@@ -73,7 +73,7 @@ function PreviewContent() {
   const [isProcessingPaste, setIsProcessingPaste] = useState(false);
   
   // Content structure state
-  const [contentStructure, setContentStructure] = useState<ContentStructure | null>(null);
+  const [contentStructure, setContentStructure] = useState<SectionStructure | null>(null);
   const [isLoadingStructure, setIsLoadingStructure] = useState(false);
   const [showStructure, setShowStructure] = useState(false);
   const [viewMode, setViewMode] = useState<'text' | 'structure'>('text');

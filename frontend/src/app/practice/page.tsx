@@ -900,7 +900,7 @@ export default function PracticePage() {
         questionCount: parsedSetSize,
         questionType: 'multiple_choice',
         difficulty: 'mixed',
-        name: `${baseName} (Multiple Choice)`,
+        name: baseName,
         folderId: saveToPracticeFolder || undefined,
         onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
         chapterFilter,
@@ -914,7 +914,7 @@ export default function PracticePage() {
         questionCount: parsedSetSize,
         questionType: 'true_false',
         difficulty: 'mixed',
-        name: `${baseName} (True/False)`,
+        name: baseName,
         folderId: saveToPracticeFolder || undefined,
         onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
         chapterFilter,
@@ -927,7 +927,7 @@ export default function PracticePage() {
         questions: mcQuiz.questions,
         userId,
         sectionIds,
-        name: `${baseName} (Flashcards)`,
+        name: baseName,
         folderId: saveToPracticeFolder || undefined,
       });
       
