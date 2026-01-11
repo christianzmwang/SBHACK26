@@ -756,7 +756,42 @@ export const foldersApi = {
     const data = await handleResponse<{ section: MaterialSection }>(response);
     return data.section;
   },
+
+  async getContentStructure(sectionId: string): Promise<ContentStructure> {
+    const response = await fetch(`${API_BASE}/materials/section/${sectionId}/structure`);
+    const data = await handleResponse<{ success: boolean; structure: ContentStructure }>(response);
+    return data.structure;
+  },
 };
+
+// Content structure types
+export interface ContentStructure {
+  hasChapters: boolean;
+  materials: {
+    id: string;
+    title: string;
+    fileName: string;
+    totalChunks: number;
+    structure: {
+      chapters: { number: number; title: string }[];
+      totalTopics: number;
+      hasStructure: boolean;
+    } | null;
+  }[];
+  totalChunks: number;
+  chapters: {
+    number: number;
+    title: string;
+    chunkCount: number;
+    percentage: string;
+    topics: string[];
+  }[];
+  topicSummary: {
+    totalChunks: number;
+    embeddedChunks: number;
+    message: string;
+  } | null;
+}
 
 // Health check
 export const healthApi = {

@@ -7,7 +7,8 @@ import {
   foldersApi,
   type MaterialSection,
   type FileItem,
-  type FileWarning
+  type FileWarning,
+  type ContentStructure
 } from "@/lib/api";
 
 // Helper to format file size
@@ -65,6 +66,11 @@ function PreviewContent() {
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [isUploadingYouTube, setIsUploadingYouTube] = useState(false);
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
+  
+  // Content structure state
+  const [contentStructure, setContentStructure] = useState<ContentStructure | null>(null);
+  const [isLoadingStructure, setIsLoadingStructure] = useState(false);
+  const [showStructure, setShowStructure] = useState(false);
 
   // Navigate back to the correct folder
   const handleBack = () => {
@@ -72,6 +78,21 @@ function PreviewContent() {
       router.push(`/course-material?folders=${foldersParam}`);
     } else {
       router.push('/course-material');
+    }
+  };
+
+  // Load content structure
+  const loadContentStructure = async () => {
+    if (!sectionId || isLoadingStructure) return;
+    
+    setIsLoadingStructure(true);
+    try {
+      const structure = await foldersApi.getContentStructure(sectionId);
+      setContentStructure(structure);
+    } catch (err) {
+      console.error('Failed to load content structure:', err);
+    } finally {
+      setIsLoadingStructure(false);
     }
   };
 
@@ -471,16 +492,161 @@ function PreviewContent() {
             </h1>
             <p className="text-sm text-slate-400 mt-1">{section.description}</p>
           </div>
-          <button
-            onClick={handleBack}
-            className="flex items-center gap-2 border border-white px-4 py-2 text-sm font-semibold text-white transition hover:bg-white hover:text-black cursor-pointer"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-            Back
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Content Structure Button */}
+            <button
+              onClick={() => {
+                if (!contentStructure && !isLoadingStructure) {
+                  loadContentStructure();
+                }
+                setShowStructure(!showStructure);
+              }}
+              className={`flex items-center gap-2 border px-4 py-2 text-sm font-semibold transition cursor-pointer ${
+                showStructure 
+                  ? 'border-indigo-500 bg-indigo-500 text-white' 
+                  : 'border-slate-600 text-slate-300 hover:border-slate-400 hover:text-white'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+              </svg>
+              Content Structure
+            </button>
+            <button
+              onClick={handleBack}
+              className="flex items-center gap-2 border border-white px-4 py-2 text-sm font-semibold text-white transition hover:bg-white hover:text-black cursor-pointer"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+              Back
+            </button>
+          </div>
         </div>
+
+        {/* Content Structure Panel */}
+        {showStructure && (
+          <div className="mb-4 border border-slate-700 bg-slate-900/50 p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-white uppercase tracking-wide">
+                Content Structure Analysis
+              </h3>
+              <button
+                onClick={() => setShowStructure(false)}
+                className="text-slate-400 hover:text-white transition"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {isLoadingStructure ? (
+              <div className="flex items-center gap-2 text-slate-400 py-4">
+                <div className="animate-spin h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full" />
+                <span className="text-sm">Analyzing content structure...</span>
+              </div>
+            ) : contentStructure ? (
+              <div className="space-y-4">
+                {/* Summary */}
+                <div className="flex flex-wrap gap-4 text-sm">
+                  <div className="bg-slate-800 px-3 py-2">
+                    <span className="text-slate-400">Materials:</span>
+                    <span className="ml-2 text-white font-medium">{contentStructure.materials.length}</span>
+                  </div>
+                  <div className="bg-slate-800 px-3 py-2">
+                    <span className="text-slate-400">Total Chunks:</span>
+                    <span className="ml-2 text-white font-medium">{contentStructure.totalChunks}</span>
+                  </div>
+                  <div className="bg-slate-800 px-3 py-2">
+                    <span className="text-slate-400">Structure:</span>
+                    <span className={`ml-2 font-medium ${contentStructure.hasChapters ? 'text-green-400' : 'text-amber-400'}`}>
+                      {contentStructure.hasChapters ? 'Chapters Detected' : 'Topic Clustering'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Chapters */}
+                {contentStructure.hasChapters && contentStructure.chapters.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                      Chapters ({contentStructure.chapters.length})
+                    </h4>
+                    <div className="space-y-2">
+                      {contentStructure.chapters.map((chapter) => (
+                        <div key={chapter.number} className="bg-slate-800 p-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="text-indigo-400 font-mono text-sm">Ch {chapter.number}</span>
+                              <span className="text-white">{chapter.title}</span>
+                            </div>
+                            <div className="text-sm text-slate-400">
+                              {chapter.chunkCount} chunks ({chapter.percentage}%)
+                            </div>
+                          </div>
+                          {chapter.topics.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {chapter.topics.map((topic, i) => (
+                                <span key={i} className="text-xs bg-slate-700 text-slate-300 px-2 py-0.5">
+                                  {topic}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {/* Progress bar */}
+                          <div className="mt-2 h-1.5 bg-slate-700 overflow-hidden">
+                            <div 
+                              className="h-full bg-indigo-500 transition-all" 
+                              style={{ width: `${chapter.percentage}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Topic Summary (for non-chapter content) */}
+                {!contentStructure.hasChapters && contentStructure.topicSummary && (
+                  <div className="bg-slate-800 p-4">
+                    <div className="flex items-start gap-3">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <div>
+                        <p className="text-sm text-slate-300">
+                          No chapter structure detected in this content.
+                        </p>
+                        <p className="text-sm text-slate-400 mt-1">
+                          {contentStructure.topicSummary.message}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Materials List */}
+                {contentStructure.materials.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                      Processed Materials
+                    </h4>
+                    <div className="space-y-1">
+                      {contentStructure.materials.map((material) => (
+                        <div key={material.id} className="flex items-center justify-between bg-slate-800 px-3 py-2 text-sm">
+                          <span className="text-slate-300 truncate flex-1">{material.fileName}</span>
+                          <span className="text-slate-500 ml-2">{material.totalChunks} chunks</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">No content structure available. Upload files to analyze.</p>
+            )}
+          </div>
+        )}
 
         {/* Error/Upload Progress */}
         {error && (

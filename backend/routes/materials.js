@@ -153,4 +153,141 @@ router.post('/materials/search', async (req, res) => {
   }
 });
 
+/**
+ * Get content structure (chapters/topics) for a section
+ * GET /api/materials/section/:sectionId/structure
+ */
+router.get('/materials/section/:sectionId/structure', async (req, res) => {
+  try {
+    const { sectionId } = req.params;
+
+    // Get all materials for this section
+    const materialsResult = await query(
+      `SELECT m.id, m.title, m.file_name, m.total_chunks, m.metadata
+       FROM materials m
+       JOIN section_files sf ON sf.material_id = m.id
+       WHERE sf.section_id = $1
+       ORDER BY m.created_at`,
+      [sectionId]
+    );
+
+    if (materialsResult.rows.length === 0) {
+      return res.json({
+        success: true,
+        structure: {
+          hasChapters: false,
+          materials: [],
+          totalChunks: 0,
+          topics: []
+        }
+      });
+    }
+
+    // Get all chunks with their metadata to analyze structure
+    const materialIds = materialsResult.rows.map(m => m.id);
+    const chunksResult = await query(
+      `SELECT 
+        mc.material_id,
+        mc.metadata,
+        mc.content_type,
+        mc.embedding
+       FROM material_chunks mc
+       WHERE mc.material_id = ANY($1)
+       ORDER BY mc.material_id, mc.chunk_index`,
+      [materialIds]
+    );
+
+    // Analyze chapter structure from chunk metadata
+    const chapterMap = new Map();
+    let hasChapterStructure = false;
+    let unstructuredCount = 0;
+
+    for (const chunk of chunksResult.rows) {
+      const chapterNum = chunk.metadata?.chapter;
+      const chapterTitle = chunk.metadata?.chapterTitle;
+      
+      if (chapterNum && chapterTitle && chapterTitle !== 'Main Content') {
+        hasChapterStructure = true;
+        const key = `${chunk.material_id}_ch${chapterNum}`;
+        
+        if (!chapterMap.has(key)) {
+          chapterMap.set(key, {
+            chapterNum,
+            chapterTitle,
+            materialId: chunk.material_id,
+            chunkCount: 0,
+            topics: new Set()
+          });
+        }
+        
+        const chapter = chapterMap.get(key);
+        chapter.chunkCount++;
+        
+        // Track topics within chapter if available
+        if (chunk.metadata?.topic) {
+          chapter.topics.add(chunk.metadata.topic);
+        }
+      } else {
+        unstructuredCount++;
+      }
+    }
+
+    // If more than half chunks are unstructured, don't report chapter structure
+    if (unstructuredCount > chunksResult.rows.length * 0.5) {
+      hasChapterStructure = false;
+    }
+
+    // Build response structure
+    const materials = materialsResult.rows.map(m => ({
+      id: m.id,
+      title: m.title,
+      fileName: m.file_name,
+      totalChunks: m.total_chunks,
+      structure: m.metadata?.structure || null
+    }));
+
+    let chapters = [];
+    if (hasChapterStructure) {
+      chapters = Array.from(chapterMap.values())
+        .sort((a, b) => a.chapterNum - b.chapterNum)
+        .map(ch => ({
+          number: ch.chapterNum,
+          title: ch.chapterTitle,
+          chunkCount: ch.chunkCount,
+          percentage: ((ch.chunkCount / chunksResult.rows.length) * 100).toFixed(1),
+          topics: Array.from(ch.topics)
+        }));
+    }
+
+    // If no chapter structure, we'll need to cluster to show topics
+    // For now, just indicate clustering would be needed
+    let topicSummary = null;
+    if (!hasChapterStructure && chunksResult.rows.length > 0) {
+      // Count chunks with embeddings for potential clustering
+      const embeddedChunks = chunksResult.rows.filter(c => c.embedding).length;
+      topicSummary = {
+        totalChunks: chunksResult.rows.length,
+        embeddedChunks,
+        message: embeddedChunks > 0 
+          ? `Content will be automatically grouped into ${Math.max(2, Math.ceil(embeddedChunks / 25))} natural topic clusters when generating quizzes/flashcards.`
+          : 'No embeddings available for topic analysis.'
+      };
+    }
+
+    res.json({
+      success: true,
+      structure: {
+        hasChapters: hasChapterStructure,
+        materials,
+        totalChunks: chunksResult.rows.length,
+        chapters,
+        topicSummary
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching content structure:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
