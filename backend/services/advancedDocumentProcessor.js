@@ -87,7 +87,12 @@ const processDocument = async (file, metadata) => {
   const { isSTEM, confidence, indicators } = detectSTEMContent(extractedText);
   console.log(`Document classification: ${isSTEM ? 'STEM' : 'Non-STEM'} (confidence: ${confidence}%, indicators: ${indicators.join(', ') || 'none'})`);
 
-  // Step 3: Chunk the document
+  // Step 3: Extract chapter/topic structure from the document
+  console.log('Extracting document structure...');
+  const documentStructure = extractDocumentStructure(extractedText);
+  console.log(`Found ${documentStructure.chapters.length} chapters, ${documentStructure.totalTopics} topics`);
+
+  // Step 4: Chunk the document
   // Use STEM-aware chunker for technical content, simple chunker for general content
   console.log('Chunking document...');
   const chunker = isSTEM 
@@ -96,6 +101,9 @@ const processDocument = async (file, metadata) => {
   
   const chunks = chunker.chunk(extractedText);
   console.log(`Created ${chunks.length} chunks`);
+
+  // Step 4b: Assign chapter/topic info to each chunk based on position
+  assignChapterInfoToChunks(chunks, documentStructure, extractedText);
 
   // Step 4: Generate embeddings for all chunks
   console.log('Generating embeddings...');
@@ -106,9 +114,16 @@ const processDocument = async (file, metadata) => {
     provider: 'openai'
   });
 
-  // Step 5: Store in database using transaction
+  // Step 6: Store in database using transaction
   const materialId = await transaction(async (client) => {
-    // Insert material record
+    // Insert material record with document structure
+    const materialMetadata = {
+      ...(metadata.extra || {}),
+      stemConfidence: confidence,
+      stemIndicators: indicators,
+      structure: documentStructure // Contains chapters, topics, and their positions
+    };
+    
     const materialResult = await client.query(
       `INSERT INTO materials (type, title, file_name, total_chunks, has_math, metadata)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -119,7 +134,7 @@ const processDocument = async (file, metadata) => {
         file.originalname,
         chunks.length,
         isSTEM, // has_math column now represents STEM content
-        JSON.stringify({ ...(metadata.extra || {}), stemConfidence: confidence, stemIndicators: indicators })
+        JSON.stringify(materialMetadata)
       ]
     );
 
@@ -319,6 +334,159 @@ const extractFromAudio = async (filePath) => {
     const debugInfo = process.env.DEEPGRAM_API_KEY ? 'API key is set' : 'API key is MISSING';
     throw new Error(`Audio transcription failed (${debugInfo}): ${error.message}`);
   }
+};
+
+/**
+ * Extract chapter and topic structure from document text
+ * Identifies chapters, sections, and their approximate positions for balanced question distribution
+ * 
+ * @param {string} text - Full document text
+ * @returns {{ chapters: Array, totalTopics: number }}
+ */
+const extractDocumentStructure = (text) => {
+  const chapters = [];
+  const topicSet = new Set();
+  
+  // Chapter patterns (ordered by specificity)
+  const chapterPatterns = [
+    // "Chapter 1: Title" or "Chapter 1 Title" or "CHAPTER 1"
+    /^(?:Chapter|CHAPTER)\s+(\d+)(?:\s*[:.]\s*|\s+)(.+?)$/gim,
+    // "Part 1: Title"
+    /^(?:Part|PART)\s+(\d+)(?:\s*[:.]\s*|\s+)(.+?)$/gim,
+    // "Unit 1: Title"
+    /^(?:Unit|UNIT)\s+(\d+)(?:\s*[:.]\s*|\s+)(.+?)$/gim,
+    // "Module 1: Title"
+    /^(?:Module|MODULE)\s+(\d+)(?:\s*[:.]\s*|\s+)(.+?)$/gim,
+    // Numbered sections like "1. Introduction" at start of line
+    /^(\d+)\.\s+([A-Z][^.!?\n]{3,60})$/gim,
+    // Markdown headers "# Title" or "## Title"
+    /^(#{1,2})\s+(.+?)$/gim,
+  ];
+
+  // Section/topic patterns (within chapters)
+  const sectionPatterns = [
+    // "Section 1.2: Title" or "1.2 Title"
+    /^(?:Section\s+)?(\d+\.\d+(?:\.\d+)?)\s*[:.]\s*(.+?)$/gim,
+    // "### Subsection" markdown
+    /^(#{3,4})\s+(.+?)$/gim,
+    // Bold or emphasized headings "**Topic**"
+    /^\*\*([^*]+)\*\*$/gim,
+  ];
+
+  // Extract chapters with their positions
+  for (const pattern of chapterPatterns) {
+    let match;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(text)) !== null) {
+      const chapterNum = match[1].startsWith('#') ? chapters.length + 1 : parseInt(match[1]) || chapters.length + 1;
+      const title = match[2]?.trim() || `Chapter ${chapterNum}`;
+      
+      // Avoid duplicate chapter numbers
+      if (!chapters.find(c => c.number === chapterNum)) {
+        chapters.push({
+          number: chapterNum,
+          title: title.substring(0, 100), // Limit title length
+          position: match.index,
+          endPosition: null, // Will be calculated later
+          topics: [],
+          chunkCount: 0
+        });
+      }
+    }
+  }
+
+  // Sort chapters by position in text
+  chapters.sort((a, b) => a.position - b.position);
+
+  // Calculate end positions (start of next chapter or end of text)
+  for (let i = 0; i < chapters.length; i++) {
+    chapters[i].endPosition = (i < chapters.length - 1) 
+      ? chapters[i + 1].position 
+      : text.length;
+  }
+
+  // Extract topics within each chapter
+  for (const chapter of chapters) {
+    const chapterText = text.substring(chapter.position, chapter.endPosition);
+    
+    for (const pattern of sectionPatterns) {
+      let match;
+      pattern.lastIndex = 0;
+      while ((match = pattern.exec(chapterText)) !== null) {
+        const topicTitle = match[2]?.trim() || match[1]?.trim();
+        if (topicTitle && topicTitle.length > 2 && topicTitle.length < 100) {
+          chapter.topics.push({
+            title: topicTitle,
+            position: chapter.position + match.index
+          });
+          topicSet.add(topicTitle.toLowerCase());
+        }
+      }
+    }
+  }
+
+  // If no chapters found, create a single "virtual" chapter
+  if (chapters.length === 0) {
+    chapters.push({
+      number: 1,
+      title: 'Main Content',
+      position: 0,
+      endPosition: text.length,
+      topics: [],
+      chunkCount: 0
+    });
+  }
+
+  return {
+    chapters,
+    totalTopics: topicSet.size,
+    hasStructure: chapters.length > 1 || chapters[0]?.topics?.length > 0
+  };
+};
+
+/**
+ * Assign chapter and topic info to chunks based on their position in the original text
+ * 
+ * @param {Array} chunks - Array of chunk objects
+ * @param {Object} structure - Document structure from extractDocumentStructure
+ * @param {string} originalText - Original document text
+ */
+const assignChapterInfoToChunks = (chunks, structure, originalText) => {
+  // Build a position map to find where each chunk appears in the original text
+  let searchPosition = 0;
+  
+  for (const chunk of chunks) {
+    // Find the chunk's approximate position in the original text
+    const chunkStart = chunk.content.substring(0, 50);
+    const position = originalText.indexOf(chunkStart, searchPosition);
+    
+    if (position !== -1) {
+      searchPosition = position;
+      
+      // Find which chapter this position falls into
+      for (const chapter of structure.chapters) {
+        if (position >= chapter.position && position < chapter.endPosition) {
+          chunk.metadata = chunk.metadata || {};
+          chunk.metadata.chapter = chapter.number;
+          chunk.metadata.chapterTitle = chapter.title;
+          chapter.chunkCount = (chapter.chunkCount || 0) + 1;
+          
+          // Find topic if any
+          const chunkTopics = chapter.topics.filter(t => 
+            position >= t.position && position < (chapter.endPosition)
+          );
+          if (chunkTopics.length > 0) {
+            chunk.metadata.topic = chunkTopics[chunkTopics.length - 1].title;
+          }
+          break;
+        }
+      }
+    }
+  }
+  
+  // Log chapter distribution
+  const distribution = structure.chapters.map(c => `Ch${c.number}: ${c.chunkCount} chunks`).join(', ');
+  console.log(`[Structure] Chunk distribution: ${distribution}`);
 };
 
 /**

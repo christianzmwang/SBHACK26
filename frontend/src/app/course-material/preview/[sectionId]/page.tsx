@@ -303,13 +303,26 @@ function PreviewContent() {
     try {
       await foldersApi.deleteFile(fileId);
 
-      setSection((prev) =>
-        prev ? { ...prev, files: prev.files.filter((f) => f.id !== fileId) } : null
-      );
-
+      // If the deleted file was selected, clear the selection
       if (selectedFile?.id === fileId) {
-        setSelectedFile(section.files.length > 1 ? section.files[0] : null);
+        setSelectedFile(null);
       }
+
+      setSection((prev) => {
+        if (!prev) return null;
+        const remainingFiles = prev.files.filter((f) => f.id !== fileId);
+        
+        // If there are remaining files and we just cleared the selection, select the first one
+        if (selectedFile?.id === fileId && remainingFiles.length > 0) {
+          // Find first non-processing file
+          const firstProcessedFile = remainingFiles.find(f => !f.processing);
+          if (firstProcessedFile) {
+            setSelectedFile(firstProcessedFile);
+          }
+        }
+        
+        return { ...prev, files: remainingFiles };
+      });
     } catch (err) {
       console.error('Failed to delete file:', err);
       setError('Failed to delete file');

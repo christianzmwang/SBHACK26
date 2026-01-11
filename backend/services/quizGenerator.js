@@ -1,13 +1,13 @@
 /**
- * Quiz Generator Service - Topic Clustering with Parallel Generation
+ * Quiz Generator Service - Chapter-Balanced Coverage
  * 
- * Uses embedding-based topic clustering to partition content and generate
- * questions in parallel for better speed and comprehensive coverage.
+ * Generates practice questions with proportional coverage across all chapters
+ * and topics in the uploaded material.
  * 
  * Features:
- * - Topic clustering using k-means on embeddings
- * - Parallel LLM calls for 10x faster generation
- * - Guaranteed coverage across all topics
+ * - Chapter-aware question distribution (proportional to content size)
+ * - Topic diversity within chapters using embedding clustering
+ * - Parallel LLM calls for speed
  * - Math-aware question generation
  * - Embedding-based deduplication
  */
@@ -17,10 +17,25 @@ import { callLLM } from './llmService.js';
 import { generateEmbedding, cosineSimilarity } from './embeddingService.js';
 
 // Configuration
-const DEFAULT_CLUSTER_COUNT = 10;
-const MAX_PARALLEL_CALLS = 10;
-const MIN_CHUNKS_PER_CLUSTER = 3;
+const CONCURRENCY_LIMIT = 10;
+const MIN_CHUNKS_PER_GROUP = 2;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
+
+/**
+ * Run tasks in batches to respect rate limits
+ */
+const runInBatches = async (items, batchSize, fn) => {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    console.log(`[Batch] Processing items ${i + 1} to ${Math.min(i + batchSize, items.length)} of ${items.length}`);
+    const batchResults = await Promise.all(
+      batch.map((item, index) => fn(item, i + index))
+    );
+    results.push(...batchResults);
+  }
+  return results;
+};
 
 /**
  * Get all chunks for given material IDs
@@ -67,6 +82,111 @@ const getMaterialIdsFromSections = async (sectionIds) => {
   );
 
   return result.rows.map(r => r.material_id);
+};
+
+/**
+ * Get material structure (chapters/topics) from database
+ */
+const getMaterialStructure = async (materialIds) => {
+  if (!materialIds || materialIds.length === 0) return [];
+
+  const result = await query(
+    `SELECT id, title, metadata FROM materials WHERE id = ANY($1)`,
+    [materialIds]
+  );
+
+  return result.rows.map(row => ({
+    materialId: row.id,
+    title: row.title,
+    structure: row.metadata?.structure || { chapters: [], totalTopics: 0, hasStructure: false }
+  }));
+};
+
+/**
+ * Group chunks by chapter for balanced distribution
+ * Returns an array of chapter groups, each with its chunks
+ */
+const groupChunksByChapter = (chunks) => {
+  const chapterGroups = new Map();
+  const noChapter = [];
+
+  for (const chunk of chunks) {
+    const chapterNum = chunk.metadata?.chapter;
+    const chapterTitle = chunk.metadata?.chapterTitle || `Chapter ${chapterNum}`;
+    
+    if (chapterNum) {
+      const key = `${chunk.material_id}_ch${chapterNum}`;
+      if (!chapterGroups.has(key)) {
+        chapterGroups.set(key, {
+          chapterNum,
+          chapterTitle,
+          materialId: chunk.material_id,
+          materialTitle: chunk.material_title,
+          chunks: []
+        });
+      }
+      chapterGroups.get(key).chunks.push(chunk);
+    } else {
+      noChapter.push(chunk);
+    }
+  }
+
+  // Convert to array and sort by chapter number
+  const groups = Array.from(chapterGroups.values()).sort((a, b) => a.chapterNum - b.chapterNum);
+  
+  // If we have ungrouped chunks, add them as a "General" group
+  if (noChapter.length > 0) {
+    // If most chunks have no chapter, use topic clustering instead
+    if (noChapter.length > chunks.length * 0.7) {
+      return null; // Signal to use topic clustering instead
+    }
+    groups.push({
+      chapterNum: 0,
+      chapterTitle: 'General Content',
+      materialId: null,
+      chunks: noChapter
+    });
+  }
+
+  return groups;
+};
+
+/**
+ * Calculate question distribution across chapters (proportional to content)
+ */
+const calculateChapterDistribution = (chapterGroups, totalQuestions) => {
+  const totalChunks = chapterGroups.reduce((sum, g) => sum + g.chunks.length, 0);
+  
+  // Calculate proportional distribution with minimum 1 question per chapter
+  const distribution = chapterGroups.map(group => {
+    const proportion = group.chunks.length / totalChunks;
+    const rawQuestions = Math.round(totalQuestions * proportion);
+    return {
+      ...group,
+      targetQuestions: Math.max(1, rawQuestions),
+      proportion: (proportion * 100).toFixed(1) + '%'
+    };
+  });
+
+  // Adjust to match exact total
+  let currentTotal = distribution.reduce((sum, d) => sum + d.targetQuestions, 0);
+  while (currentTotal < totalQuestions) {
+    // Add to largest chapter
+    distribution.sort((a, b) => b.chunks.length - a.chunks.length)[0].targetQuestions++;
+    currentTotal++;
+  }
+  while (currentTotal > totalQuestions) {
+    // Remove from smallest chapter (if it has more than 1)
+    const smallest = distribution.sort((a, b) => a.chunks.length - b.chunks.length).find(d => d.targetQuestions > 1);
+    if (smallest) {
+      smallest.targetQuestions--;
+      currentTotal--;
+    } else {
+      break;
+    }
+  }
+
+  return distribution;
 };
 
 /**
@@ -127,7 +247,7 @@ const clusterChunksByTopic = (chunks, numClusters = DEFAULT_CLUSTER_COUNT) => {
   if (chunks.length === 0) return [];
   
   // Adjust cluster count if we have fewer chunks
-  const actualClusters = Math.min(numClusters, Math.ceil(chunks.length / MIN_CHUNKS_PER_CLUSTER));
+  const actualClusters = Math.min(numClusters, Math.ceil(chunks.length / MIN_CHUNKS_PER_GROUP));
   
   if (actualClusters <= 1) {
     return [{ chunks, centroid: null }];
@@ -272,14 +392,33 @@ const generateQuestionsForCluster = async (cluster, options) => {
     questionType,
     difficulty,
     clusterIndex,
-    totalClusters
+    totalClusters,
+    chapterInfo = null
   } = options;
 
-  // Filter and limit chunks
-  const contentChunks = filterContentChunks(cluster.chunks).slice(0, 8);
+  // Filter chunks first
+  let contentChunks = filterContentChunks(cluster.chunks);
+
+  // Sort by similarity to centroid to find the most representative chunks for this topic
+  if (cluster.centroid && contentChunks.length > 0) {
+    contentChunks.sort((a, b) => {
+      const simA = cosineSimilarity(a.embedding, cluster.centroid);
+      const simB = cosineSimilarity(b.embedding, cluster.centroid);
+      return simB - simA; // Descending similarity
+    });
+  }
+
+  // Take diverse chunks - top relevant + some variety from the rest
+  const topChunks = contentChunks.slice(0, 5);
+  const remainingChunks = contentChunks.slice(5);
+  // Shuffle remaining and take a few for variety
+  const shuffled = remainingChunks.sort(() => Math.random() - 0.5);
+  const varietyChunks = shuffled.slice(0, 3);
+  contentChunks = [...topChunks, ...varietyChunks];
   
   if (contentChunks.length === 0) {
-    console.log(`[Cluster ${clusterIndex + 1}/${totalClusters}] No valid content chunks, skipping`);
+    const label = chapterInfo ? `Chapter ${chapterInfo.number}` : `Cluster ${clusterIndex + 1}`;
+    console.log(`[${label}] No valid content chunks, skipping`);
     return { questions: [], error: 'No valid content chunks' };
   }
 
@@ -298,10 +437,12 @@ const generateQuestionsForCluster = async (cluster, options) => {
     difficulty,
     hasMath,
     clusterIndex,
-    totalClusters
+    totalClusters,
+    chapterInfo
   });
 
-  console.log(`[Cluster ${clusterIndex + 1}/${totalClusters}] Generating ${count} questions from ${contentChunks.length} chunks`);
+  const label = chapterInfo ? `Ch${chapterInfo.number}: ${chapterInfo.title}` : `Cluster ${clusterIndex + 1}/${totalClusters}`;
+  console.log(`[${label}] Generating ${count} questions from ${contentChunks.length} chunks`);
 
   // Retry logic
   const maxRetries = 2;
@@ -413,7 +554,8 @@ const buildQuestionPrompt = (options) => {
     difficulty,
     hasMath,
     clusterIndex,
-    totalClusters
+    totalClusters,
+    chapterInfo = null
   } = options;
 
   const difficultyGuide = difficulty === 'mixed'
@@ -427,9 +569,17 @@ const buildQuestionPrompt = (options) => {
 - Test understanding of mathematical concepts, not just memorization`
     : '';
 
-  const clusterGuide = totalClusters > 1
-    ? `\nYou are generating questions for topic cluster ${clusterIndex + 1} of ${totalClusters}. Focus on the specific concepts in this content section.`
-    : '';
+  // Chapter-aware context or topic cluster context
+  let contextGuide;
+  if (chapterInfo) {
+    contextGuide = `\nYou are generating questions from Chapter ${chapterInfo.number}: "${chapterInfo.title}".
+Focus on the key concepts, definitions, and ideas from this chapter.
+Ensure questions test understanding of this chapter's material specifically.`;
+  } else if (totalClusters > 1) {
+    contextGuide = `\nYou are generating questions for topic area ${clusterIndex + 1} of ${totalClusters}. Focus on the specific concepts in this content section.`;
+  } else {
+    contextGuide = '';
+  }
 
   let formatGuide;
   if (questionType === 'multiple_choice') {
@@ -500,7 +650,7 @@ JSON format:
   }
 
   return `You are creating educational quiz questions to test understanding of the subject matter.
-${clusterGuide}
+${contextGuide}
 
 CRITICAL OUTPUT FORMAT REQUIREMENT:
 - You MUST respond with ONLY a valid JSON array
@@ -508,11 +658,13 @@ CRITICAL OUTPUT FORMAT REQUIREMENT:
 - Do NOT use markdown code blocks
 - Start your response with [ and end with ]
 
-CONTENT RULES (NEVER VIOLATE):
-1. NEVER use phrases like "according to the text", "the text states", "in the passage", "the author mentions", or ANY reference to "the text/passage/document/reading"
-2. NEVER ask about page numbers, index entries, or chapter numbers
-3. NEVER ask about book metadata (who wrote it, publication info, etc.)
-4. Questions must be STANDALONE - they should make sense without any source document
+STRICT PROHIBITION (Zero Tolerance):
+- ABSOLUTELY NO references to "the text", "the passage", "the document", "the author", "as mentioned in", etc.
+- Questions MUST be written as objective facts about the world/subject, NEVER as reading comprehension questions about a specific text snippet.
+- BAD: "According to the text, what is archaeology?"
+- GOOD: "What is archaeology?"
+- BAD: "The passage describes which process?"
+- GOOD: "Which process involves...?"
 
 Write questions as if you are a subject matter expert testing knowledge, NOT as if you are testing reading comprehension of a document.
 
@@ -526,7 +678,9 @@ Requirements:
 
 ${formatGuide}
 
-REMEMBER: Respond with ONLY the JSON array. No other text.`;
+REMEMBER: 
+1. Respond with ONLY the JSON array. No other text.
+2. NO references to the source text in question stems. Check every question before outputting.`;
 };
 
 /**
@@ -575,7 +729,7 @@ const deduplicateQuestions = async (questions) => {
 };
 
 /**
- * Generate a quiz using topic clustering with parallel generation
+ * Generate a quiz with balanced chapter coverage
  */
 export const generateQuizFromSections = async (options) => {
   const {
@@ -598,7 +752,7 @@ export const generateQuizFromSections = async (options) => {
   }
 
   console.log(`\n========================================`);
-  console.log(`[QuizGen] Starting parallel quiz generation`);
+  console.log(`[QuizGen] Starting chapter-balanced quiz generation`);
   console.log(`[QuizGen] Target: ${questionCount} questions, Type: ${questionType}`);
   console.log(`========================================\n`);
 
@@ -618,44 +772,81 @@ export const generateQuizFromSections = async (options) => {
     throw new Error('No content chunks found in the selected materials.');
   }
 
-  // 3. Determine number of clusters based on question count
-  const numClusters = Math.min(
-    MAX_PARALLEL_CALLS,
-    Math.max(1, Math.ceil(questionCount / 10)),
-    Math.ceil(allChunks.length / MIN_CHUNKS_PER_CLUSTER)
-  );
-
-  // 4. Cluster chunks by topic using embeddings
-  const clusters = clusterChunksByTopic(allChunks, numClusters);
-  console.log(`[QuizGen] Created ${clusters.length} topic clusters for parallel generation`);
-
-  // 5. Calculate questions per cluster (distribute evenly with buffer for dedup)
-  const bufferMultiplier = 1.3; // Generate 30% extra to account for deduplication
-  const targetPerCluster = Math.ceil((questionCount * bufferMultiplier) / clusters.length);
-
-  // 6. Generate questions in parallel
-  console.log(`[QuizGen] Starting parallel generation: ${clusters.length} clusters × ${targetPerCluster} questions`);
+  // 3. Try to group chunks by chapter
+  const chapterGroups = groupChunksByChapter(allChunks);
   
+  let generationGroups;
+  let useChapterMode = false;
+
+  if (chapterGroups && chapterGroups.length > 1) {
+    // Chapter structure detected - use proportional distribution
+    useChapterMode = true;
+    generationGroups = calculateChapterDistribution(chapterGroups, questionCount);
+    console.log(`[QuizGen] Using CHAPTER-BASED distribution across ${generationGroups.length} chapters:`);
+    generationGroups.forEach(g => {
+      console.log(`  - ${g.chapterTitle}: ${g.targetQuestions} questions (${g.proportion} of content)`);
+    });
+  } else {
+    // No chapter structure - fall back to topic clustering
+    console.log(`[QuizGen] No chapter structure detected, using topic clustering`);
+    const numClusters = Math.min(10, Math.ceil(allChunks.length / MIN_CHUNKS_PER_GROUP));
+    const clusters = clusterChunksByTopic(allChunks, numClusters);
+    
+    const bufferMultiplier = 1.3;
+    const targetPerCluster = Math.ceil((questionCount * bufferMultiplier) / clusters.length);
+    
+    generationGroups = clusters.map((cluster, i) => ({
+      chapterNum: i + 1,
+      chapterTitle: `Topic ${i + 1}`,
+      chunks: cluster.chunks,
+      centroid: cluster.centroid,
+      targetQuestions: targetPerCluster
+    }));
+  }
+
+  // 4. Generate questions for each group
   const startTime = Date.now();
+  const bufferMultiplier = useChapterMode ? 1.5 : 1.3; // Generate more buffer for chapter mode
   
-  const parallelTasks = clusters.map((cluster, index) => 
-    generateQuestionsForCluster(cluster, {
-      count: targetPerCluster,
-      questionType,
-      difficulty,
-      clusterIndex: index,
-      totalClusters: clusters.length
-    })
+  const results = await runInBatches(generationGroups, CONCURRENCY_LIMIT, (group, index) => 
+    generateQuestionsForCluster(
+      { chunks: group.chunks, centroid: group.centroid || null },
+      {
+        count: Math.ceil(group.targetQuestions * bufferMultiplier),
+        questionType,
+        difficulty,
+        clusterIndex: index,
+        totalClusters: generationGroups.length,
+        chapterInfo: useChapterMode ? { number: group.chapterNum, title: group.chapterTitle } : null
+      }
+    )
   );
 
-  const results = await Promise.all(parallelTasks);
-  
   const generationTime = Date.now() - startTime;
-  console.log(`[QuizGen] Parallel generation completed in ${generationTime}ms`);
+  console.log(`[QuizGen] Generation completed in ${generationTime}ms`);
 
-  // 7. Collect questions and errors
+  // 5. Collect questions, respecting per-chapter targets
   const allQuestions = [];
   const errors = [];
+  
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const group = generationGroups[i];
+    
+    if (result.questions && result.questions.length > 0) {
+      // Take up to the target for this chapter (plus a small buffer)
+      const questionsFromGroup = result.questions.slice(0, group.targetQuestions + 2);
+      // Tag questions with chapter info
+      questionsFromGroup.forEach(q => {
+        q.chapter = group.chapterNum;
+        q.chapterTitle = group.chapterTitle;
+      });
+      allQuestions.push(...questionsFromGroup);
+    }
+    if (result.error) {
+      errors.push(result.error);
+    }
+  }
   
   for (const result of results) {
     if (result.questions && result.questions.length > 0) {
@@ -734,7 +925,7 @@ export const generateQuizFromSections = async (options) => {
 };
 
 /**
- * Generate flashcards using topic clustering with parallel generation
+ * Generate flashcards with balanced chapter coverage
  */
 export const generateFlashcardsFromSections = async (options) => {
   const {
@@ -756,7 +947,7 @@ export const generateFlashcardsFromSections = async (options) => {
   }
 
   console.log(`\n========================================`);
-  console.log(`[FlashcardGen] Starting parallel flashcard generation`);
+  console.log(`[FlashcardGen] Starting chapter-balanced flashcard generation`);
   console.log(`[FlashcardGen] Target: ${count} flashcards`);
   console.log(`========================================\n`);
 
@@ -774,42 +965,68 @@ export const generateFlashcardsFromSections = async (options) => {
     throw new Error('No content chunks found in the selected materials.');
   }
 
-  // 3. Cluster by topic
-  const numClusters = Math.min(
-    MAX_PARALLEL_CALLS,
-    Math.max(1, Math.ceil(count / 10)),
-    Math.ceil(allChunks.length / MIN_CHUNKS_PER_CLUSTER)
-  );
-
-  const clusters = clusterChunksByTopic(allChunks, numClusters);
-
-  // 4. Calculate cards per cluster
-  const bufferMultiplier = 1.3;
-  const targetPerCluster = Math.ceil((count * bufferMultiplier) / clusters.length);
-
-  // 5. Generate in parallel
-  const startTime = Date.now();
+  // 3. Try to group by chapter, fall back to topic clustering
+  const chapterGroups = groupChunksByChapter(allChunks);
   
-  const parallelTasks = clusters.map((cluster, index) => 
-    generateQuestionsForCluster(cluster, {
-      count: targetPerCluster,
-      questionType: 'flashcard',
-      difficulty: 'medium',
-      clusterIndex: index,
-      totalClusters: clusters.length
-    })
+  let generationGroups;
+  let useChapterMode = false;
+
+  if (chapterGroups && chapterGroups.length > 1) {
+    useChapterMode = true;
+    generationGroups = calculateChapterDistribution(chapterGroups, count);
+    console.log(`[FlashcardGen] Using CHAPTER-BASED distribution across ${generationGroups.length} chapters`);
+  } else {
+    console.log(`[FlashcardGen] No chapter structure, using topic clustering`);
+    const numClusters = Math.min(10, Math.ceil(allChunks.length / MIN_CHUNKS_PER_GROUP));
+    const clusters = clusterChunksByTopic(allChunks, numClusters);
+    
+    const bufferMultiplier = 1.3;
+    const targetPerCluster = Math.ceil((count * bufferMultiplier) / clusters.length);
+    
+    generationGroups = clusters.map((cluster, i) => ({
+      chapterNum: i + 1,
+      chapterTitle: `Topic ${i + 1}`,
+      chunks: cluster.chunks,
+      centroid: cluster.centroid,
+      targetQuestions: targetPerCluster
+    }));
+  }
+
+  // 4. Generate flashcards for each group
+  const startTime = Date.now();
+  const bufferMultiplier = useChapterMode ? 1.5 : 1.3;
+  
+  const results = await runInBatches(generationGroups, CONCURRENCY_LIMIT, (group, index) => 
+    generateQuestionsForCluster(
+      { chunks: group.chunks, centroid: group.centroid || null },
+      {
+        count: Math.ceil(group.targetQuestions * bufferMultiplier),
+        questionType: 'flashcard',
+        difficulty: 'medium',
+        clusterIndex: index,
+        totalClusters: generationGroups.length,
+        chapterInfo: useChapterMode ? { number: group.chapterNum, title: group.chapterTitle } : null
+      }
+    )
   );
 
-  const results = await Promise.all(parallelTasks);
   const generationTime = Date.now() - startTime;
 
-  // 6. Collect flashcards and errors
+  // 5. Collect flashcards, respecting per-chapter targets
   const allFlashcards = [];
   const errors = [];
   
-  for (const result of results) {
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const group = generationGroups[i];
+    
     if (result.questions && result.questions.length > 0) {
-      allFlashcards.push(...result.questions);
+      const cardsFromGroup = result.questions.slice(0, group.targetQuestions + 2);
+      cardsFromGroup.forEach(c => {
+        c.chapter = group.chapterNum;
+        c.chapterTitle = group.chapterTitle;
+      });
+      allFlashcards.push(...cardsFromGroup);
     }
     if (result.error) {
       errors.push(result.error);
@@ -817,7 +1034,7 @@ export const generateFlashcardsFromSections = async (options) => {
   }
   
   if (errors.length > 0) {
-    console.log(`[FlashcardGen] Errors encountered: ${errors.length} clusters failed`);
+    console.log(`[FlashcardGen] Errors encountered: ${errors.length} groups failed`);
     console.log(`[FlashcardGen] Error details: ${[...new Set(errors)].join('; ')}`);
   }
 
