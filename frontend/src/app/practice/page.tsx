@@ -2510,6 +2510,66 @@ export default function PracticePage() {
     readCurrentCard
   ]);
 
+  // Helper to find section ID for a material ID
+  const findSectionIdForMaterial = useCallback((materialId: string, folders: Folder[]): string | null => {
+    for (const folder of folders) {
+      for (const section of folder.sections) {
+        if (section.files && section.files.some(f => f.id === materialId)) {
+          return section.id;
+        }
+      }
+      const found = findSectionIdForMaterial(materialId, folder.subfolders);
+      if (found) return found;
+    }
+    return null;
+  }, []);
+
+  const handlePracticeFocusArea = async (topic: TopicPerformance) => {
+    const targetSectionIds = new Set<string>();
+    const targetChapters = new Map<string, Set<number>>();
+
+    // 1. Collect Section IDs
+    if (topic.sourceSectionIds && topic.sourceSectionIds.length > 0) {
+      topic.sourceSectionIds.forEach(id => targetSectionIds.add(id));
+    }
+
+    // 2. Process Material IDs (for chapters and fallback sections)
+    if (topic.sourceMaterialIds && topic.sourceMaterialIds.length > 0) {
+      topic.sourceMaterialIds.forEach(mid => {
+        // If we didn't have section IDs, try to find them from materials
+        if (targetSectionIds.size === 0) {
+           const sid = findSectionIdForMaterial(mid, materialFolders);
+           if (sid) targetSectionIds.add(sid);
+        }
+
+        // Set chapter filter if topic has specific chapter
+        if (topic.chapter) {
+          const current = targetChapters.get(mid) || new Set();
+          current.add(topic.chapter);
+          targetChapters.set(mid, current);
+        }
+      });
+    }
+
+    if (targetSectionIds.size === 0) {
+      setError('Cannot generate practice for this topic: source content not found. Please try generating a new quiz manually.');
+      return;
+    }
+
+    // 3. Set State and Navigate
+    setSelectedSectionIds(Array.from(targetSectionIds));
+    setSelectedChapters(targetChapters);
+    
+    // Also expand these materials so user can see what's checked
+    if (topic.sourceMaterialIds) {
+        setExpandedMaterials(new Set(topic.sourceMaterialIds));
+    }
+
+    setViewMode('generate');
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   if (isLoading && !practiceOverview) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -3767,12 +3827,58 @@ export default function PracticePage() {
                 <p className="text-slate-400 text-sm">Topics where you need more practice based on your quiz performance</p>
               </div>
             </div>
-            {topicAnalysis.summary.overallAccuracy !== null && (
-              <div className="text-right">
-                <div className="text-2xl font-bold text-white">{topicAnalysis.summary.overallAccuracy}%</div>
-                <div className="text-xs text-slate-400">Overall Accuracy</div>
-              </div>
-            )}
+            <div className="flex items-center gap-4">
+               <button 
+                  onClick={() => {
+                     const allWeakSectionIds = new Set<string>();
+                     const allWeakChapters = new Map<string, Set<number>>();
+                     const allMaterialIds = new Set<string>();
+
+                     topicAnalysis.focusAreas.forEach(topic => {
+                       // Sections
+                       if (topic.sourceSectionIds) {
+                         topic.sourceSectionIds.forEach(id => allWeakSectionIds.add(id));
+                       }
+                       
+                       // Materials & Chapters
+                       if (topic.sourceMaterialIds) {
+                         topic.sourceMaterialIds.forEach(mid => {
+                           allMaterialIds.add(mid);
+                           // Fallback section finding
+                           if (topic.sourceSectionIds?.length === 0) {
+                              const sid = findSectionIdForMaterial(mid, materialFolders);
+                              if (sid) allWeakSectionIds.add(sid);
+                           }
+
+                           if (topic.chapter) {
+                             const current = allWeakChapters.get(mid) || new Set();
+                             current.add(topic.chapter);
+                             allWeakChapters.set(mid, current);
+                           }
+                         });
+                       }
+                     });
+                     
+                     if (allWeakSectionIds.size > 0) {
+                        setSelectedSectionIds(Array.from(allWeakSectionIds));
+                        setSelectedChapters(allWeakChapters);
+                        if (allMaterialIds.size > 0) setExpandedMaterials(allMaterialIds);
+                        
+                        setViewMode('generate');
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                     } else {
+                        setError("No source materials found for these topics. Try generating a new quiz manually first.");
+                     }
+                  }}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 hover:cursor-pointer text-white text-sm font-medium transition flex items-center gap-2"
+               >
+                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                 </svg>
+                 Practice All Weak Points
+               </button>
+
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -3822,6 +3928,21 @@ export default function PracticePage() {
                       </span>
                     )}
                   </div>
+
+                  <button
+                    onClick={() => handlePracticeFocusArea(topic)}
+                    disabled={isGenerating}
+                    className="w-full mt-3 py-1.5 px-3 bg-white/10 hover:bg-white/20 hover:cursor-pointer text-white text-xs font-medium transition flex items-center justify-center gap-1.5"
+                  >
+                    {isGenerating ? (
+                       <span className="w-3 h-3 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                    ) : (
+                       <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
+                         <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                       </svg>
+                    )}
+                    Practice This
+                  </button>
                 </div>
               );
             })}
@@ -3840,6 +3961,12 @@ export default function PracticePage() {
             <div className="text-slate-500">
               {topicAnalysis.summary.totalTopics} topics tracked
             </div>
+            {topicAnalysis.summary.overallAccuracy !== null && (
+              <div className="flex items-center gap-2 border-l border-slate-700 pl-6">
+                <span className="text-white font-semibold">{topicAnalysis.summary.overallAccuracy}%</span>
+                <span className="text-slate-400">overall accuracy</span>
+              </div>
+            )}
           </div>
         </div>
       )}
