@@ -39,6 +39,7 @@ export default function VoicePage() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const isAnalyzingRef = useRef(false);
 
   // Clean up on unmount
   useEffect(() => {
@@ -49,17 +50,21 @@ export default function VoicePage() {
 
   // Analyze audio levels for visualization
   const analyzeAudio = useCallback(() => {
-    if (!analyserRef.current || !isActive) return;
+    if (!analyserRef.current || !isAnalyzingRef.current) return;
 
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
     analyserRef.current.getByteFrequencyData(dataArray);
 
-    // Map frequency data to 48 bars
+    // Focus on voice frequencies (roughly 80Hz - 3000Hz) which are in the lower bins
+    // Use only the first ~40% of frequency data where voice lives
+    const voiceDataLength = Math.floor(dataArray.length * 0.4);
     const barCount = 48;
-    const samplesPerBar = Math.floor(dataArray.length / barCount);
-    const levels: number[] = [];
-
-    for (let i = 0; i < barCount; i++) {
+    const halfBars = barCount / 2; // 24 bars per side
+    const samplesPerBar = Math.floor(voiceDataLength / halfBars);
+    
+    // Create levels for one half (center to edge)
+    const halfLevels: number[] = [];
+    for (let i = 0; i < halfBars; i++) {
       let sum = 0;
       for (let j = 0; j < samplesPerBar; j++) {
         sum += dataArray[i * samplesPerBar + j];
@@ -67,12 +72,20 @@ export default function VoicePage() {
       const average = sum / samplesPerBar;
       // Convert to percentage (8% min, 95% max)
       const level = Math.max(8, Math.min(95, (average / 255) * 100 + 8));
-      levels.push(level);
+      halfLevels.push(level);
     }
+
+    // Mirror the levels: center bars get low frequencies, outer bars get higher frequencies
+    // Left side: reversed (high freq on far left, low freq in center-left)
+    // Right side: normal (low freq in center-right, high freq on far right)
+    const levels: number[] = [
+      ...halfLevels.slice().reverse(), // Left half (mirrored)
+      ...halfLevels,                    // Right half
+    ];
 
     setAudioLevels(levels);
     animationFrameRef.current = requestAnimationFrame(analyzeAudio);
-  }, [isActive]);
+  }, []);
 
   const startRecording = async () => {
     try {
@@ -103,6 +116,7 @@ export default function VoicePage() {
       source.connect(analyserRef.current);
 
       // Start audio level animation
+      isAnalyzingRef.current = true;
       animationFrameRef.current = requestAnimationFrame(analyzeAudio);
 
       // Connect to Deepgram WebSocket
@@ -178,6 +192,7 @@ export default function VoicePage() {
 
   const stopRecording = () => {
     // Stop animation frame
+    isAnalyzingRef.current = false;
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -248,9 +263,9 @@ export default function VoicePage() {
   const colors = colorConfig[mode];
 
   return (
-    <div className="fixed inset-0 top-[73px] bottom-[57px] flex flex-col items-center justify-start overflow-hidden bg-black pt-8">
+    <div className="fixed inset-0 top-[73px] bottom-[57px] flex flex-col items-center justify-center overflow-hidden bg-black">
       {/* Mode Toggle - Top Right */}
-      <div className="absolute right-6 top-6 flex gap-3">
+      <div className="absolute right-6 top-6 flex gap-3 z-10">
         <button
           onClick={() => setMode("talk")}
           className={`px-4 py-2 text-sm font-semibold transition cursor-pointer ${
@@ -273,18 +288,18 @@ export default function VoicePage() {
         </button>
       </div>
 
-      {/* Voice Line Visualizer */}
-      <div className="flex flex-col items-center mt-16">
+      {/* Voice Line Visualizer - Centered */}
+      <div className="flex flex-col items-center">
         <button
           onClick={handleButtonClick}
-          className="relative flex h-40 w-96 cursor-pointer items-center justify-center focus:outline-none"
+          className="relative flex h-56 w-[480px] cursor-pointer items-center justify-center focus:outline-none"
           style={{
             transform: isActive ? "scale(1.05)" : "scale(1)",
             transition: "transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
           }}
         >
           {/* Voice line bars container */}
-          <div className="relative flex h-full w-full items-center justify-center gap-[2px]">
+          <div className="relative flex h-full w-full items-center justify-center gap-[3px]">
             {/* Generate 48 bars for the voice line */}
             {Array.from({ length: 48 }).map((_, i) => {
               // Use real audio levels when active, otherwise use default animation
@@ -304,10 +319,10 @@ export default function VoicePage() {
                   key={i}
                   className="relative"
                   style={{
-                    width: "4px",
-                    minHeight: "2px",
+                    width: "5px",
+                    minHeight: "3px",
                     background: `linear-gradient(180deg, ${colors.primary}, ${colors.secondary}, ${colors.accent})`,
-                    borderRadius: "2px",
+                    borderRadius: "3px",
                     animation: !isActive
                       ? `voiceBarIdle ${animationDuration}s ease-in-out ${animationDelay}s infinite alternate`
                       : "none",
@@ -322,71 +337,78 @@ export default function VoicePage() {
           </div>
         </button>
 
-        {/* Status Text */}
+        {/* Status Text - Only shown when inactive */}
         <p
-          className="mt-8 text-center text-lg"
+          className="mt-6 text-center text-lg text-slate-300"
           style={{
-            color: isActive ? undefined : "rgb(203 213 225)",
-            transition: "color 0.4s ease",
+            opacity: isActive ? 0 : 1,
+            transition: "opacity 0.4s ease",
           }}
         >
-          <span
-            className={isActive ? colors.text : ""}
-            style={{ transition: "color 0.4s ease" }}
-          >
-            {isActive
-              ? mode === "talk"
-                ? "Listening..."
-                : "Recording..."
-              : `Press to ${mode === "talk" ? "start talking" : "start recording"}`}
-          </span>
+          {`Press to ${mode === "talk" ? "start talking" : "start recording"}`}
         </p>
 
         {/* Error Message */}
         {error && (
           <p className="mt-2 text-center text-sm text-red-500">{error}</p>
         )}
-
-        {/* Hint Text */}
-        <p className="mt-4 max-w-xs text-center text-sm text-slate-500">
-          {mode === "talk"
-            ? "Talk through concepts and get instant AI guidance"
-            : "Record your study session for later review"}
-        </p>
       </div>
 
-      {/* Transcript Display */}
-      <div className="mt-8 w-full max-w-2xl px-6 flex-1 overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-medium text-slate-400">Transcript</h3>
+      {/* Transcript Display - Appears when active */}
+      <div 
+        className="absolute bottom-0 left-0 right-0 w-full max-w-2xl mx-auto pb-6 flex flex-col"
+        style={{
+          opacity: isActive ? 1 : 0,
+          transform: isActive ? "translateY(0)" : "translateY(40px)",
+          transition: "opacity 0.5s ease, transform 0.5s ease",
+          pointerEvents: isActive ? "auto" : "none",
+          height: "200px",
+        }}
+      >
+        <div className="relative flex items-center justify-between mb-3 z-10">
+          <h3 className="text-sm font-medium text-slate-400 px-4">Transcript</h3>
           {(transcript || interimTranscript) && (
             <button
               onClick={clearTranscript}
-              className="text-xs text-slate-500 hover:text-white transition-colors"
-            >
+              className="text-xs px-10 text-slate-500 hover:text-white transition-colors cursor-pointer">
               Clear
             </button>
           )}
         </div>
-        <div
-          className="flex-1 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/50 p-4"
-          style={{ maxHeight: "calc(100vh - 500px)" }}
-        >
-          {transcript || interimTranscript ? (
-            <p className="text-slate-200 leading-relaxed">
-              {transcript}
-              {interimTranscript && (
-                <span className="text-slate-400 italic">
-                  {transcript ? " " : ""}
-                  {interimTranscript}
-                </span>
+        
+        {/* Scrollable transcript with fade at bottom - flipped so new text appears at top */}
+        <div className="relative flex-1 overflow-hidden">
+          <div
+            className="h-full overflow-y-auto px-4 pt-2"
+            style={{ 
+              scrollbarWidth: "none",
+              msOverflowStyle: "none",
+              transform: "scaleY(-1)",
+            }}
+          >
+            <div style={{ transform: "scaleY(-1)", paddingTop: "2rem" }}>
+              {(transcript || interimTranscript) && (
+                <p className="text-slate-200 leading-relaxed">
+                  {transcript}
+                  {interimTranscript && (
+                    <span className="text-slate-400 italic">
+                      {transcript ? " " : ""}
+                      {interimTranscript}
+                    </span>
+                  )}
+                </p>
               )}
-            </p>
-          ) : (
-            <p className="text-slate-600 text-center py-8">
-              Your transcription will appear here...
-            </p>
-          )}
+            </div>
+          </div>
+          
+          {/* Fade gradient at top where new text appears from */}
+          <div 
+            className="absolute left-0 right-0 h-24 pointer-events-none"
+            style={{
+              top: "-1rem",
+              background: "linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,0.8) 50%, transparent 100%)",
+            }}
+          />
         </div>
       </div>
 
@@ -405,6 +427,11 @@ export default function VoicePage() {
             transform: scaleY(1);
             opacity: 0.4;
           }
+        }
+        
+        /* Hide scrollbar */
+        div::-webkit-scrollbar {
+          display: none;
         }
       `}</style>
     </div>
