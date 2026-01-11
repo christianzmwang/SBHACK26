@@ -252,6 +252,7 @@ router.get('/topic-analysis', async (req, res) => {
       WHERE qa.user_id = $1
         AND q.topic IS NOT NULL 
         AND q.topic != ''
+        AND q.topic != 'Academic Resources'
         AND qa.answers->>(q.id::text) IS NOT NULL
       GROUP BY q.topic, q.chapter
       ORDER BY accuracy_percent ASC, total_attempts DESC`,
