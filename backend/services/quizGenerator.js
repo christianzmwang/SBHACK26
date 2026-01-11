@@ -14,7 +14,7 @@
 
 import { query, transaction } from '../config/database.js';
 import { callLLM } from './llmService.js';
-import { generateEmbedding, cosineSimilarity } from './embeddingService.js';
+import { generateEmbedding, generateBatchEmbeddings, cosineSimilarity } from './embeddingService.js';
 import { Worker } from 'worker_threads';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -600,31 +600,84 @@ Respond with ONLY the valid JSON array. No other text.`;
 };
 
 /**
+ * Fast text-based similarity check (Jaccard on words)
+ * Used as a quick pre-filter before expensive embedding comparison
+ */
+const textSimilarity = (text1, text2) => {
+  const words1 = new Set(text1.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+  const words2 = new Set(text2.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+  
+  const intersection = [...words1].filter(w => words2.has(w)).length;
+  const union = new Set([...words1, ...words2]).size;
+  
+  return union > 0 ? intersection / union : 0;
+};
+
+/**
  * Deduplicate questions using embedding similarity
+ * Optimized with batch embeddings and text pre-filtering
  */
 const deduplicateQuestions = async (questions) => {
   if (questions.length <= 1) return questions;
 
   console.log(`[Dedup] Deduplicating ${questions.length} questions...`);
+  const startTime = Date.now();
 
-  // Generate embeddings for all questions
+  // Quick text-based pre-filter for obvious duplicates
   const questionTexts = questions.map(q => q.question || q.front);
-  const embeddings = await Promise.all(
-    questionTexts.map(text => generateEmbedding(text, { provider: 'openai' }))
-  );
+  const preFilteredIndices = new Set();
+  
+  for (let i = 0; i < questionTexts.length; i++) {
+    if (preFilteredIndices.has(i)) continue;
+    for (let j = i + 1; j < questionTexts.length; j++) {
+      if (preFilteredIndices.has(j)) continue;
+      // If text similarity is very high, mark as duplicate without embedding
+      if (textSimilarity(questionTexts[i], questionTexts[j]) > 0.8) {
+        preFilteredIndices.add(j);
+      }
+    }
+  }
+  
+  // Get indices of questions that passed pre-filter
+  const candidateIndices = [];
+  for (let i = 0; i < questions.length; i++) {
+    if (!preFilteredIndices.has(i)) {
+      candidateIndices.push(i);
+    }
+  }
+  
+  if (preFilteredIndices.size > 0) {
+    console.log(`[Dedup] Pre-filter removed ${preFilteredIndices.size} obvious duplicates`);
+  }
+  
+  // If few candidates remain, skip expensive embedding dedup
+  if (candidateIndices.length <= 5) {
+    console.log(`[Dedup] Skipping embedding dedup (only ${candidateIndices.length} candidates)`);
+    return candidateIndices.map(i => {
+      const { clusterIndex, ...q } = questions[i];
+      return q;
+    });
+  }
+
+  // Generate embeddings in batch (much faster than individual calls)
+  const candidateTexts = candidateIndices.map(i => questionTexts[i]);
+  const embeddingResults = await generateBatchEmbeddings(candidateTexts, { provider: 'openai' });
+  
+  // Map embeddings back to candidate indices
+  const embeddings = {};
+  embeddingResults.forEach((result, idx) => {
+    embeddings[candidateIndices[idx]] = result.embedding;
+  });
 
   const unique = [];
-  const usedIndices = new Set();
 
-  for (let i = 0; i < questions.length; i++) {
-    if (usedIndices.has(i)) continue;
-
+  for (const i of candidateIndices) {
     let isDuplicate = false;
 
     for (const uniqueQ of unique) {
       const similarity = cosineSimilarity(
-        embeddings[i].embedding,
-        embeddings[uniqueQ.originalIndex].embedding
+        embeddings[i],
+        embeddings[uniqueQ.originalIndex]
       );
 
       if (similarity > DEDUP_SIMILARITY_THRESHOLD) {
@@ -638,7 +691,8 @@ const deduplicateQuestions = async (questions) => {
     }
   }
 
-  console.log(`[Dedup] Kept ${unique.length} unique questions (removed ${questions.length - unique.length} duplicates)`);
+  const elapsed = Date.now() - startTime;
+  console.log(`[Dedup] Kept ${unique.length} unique questions (removed ${questions.length - unique.length} duplicates) in ${elapsed}ms`);
 
   // Remove the originalIndex helper field
   return unique.map(({ originalIndex, clusterIndex, ...q }) => q);
@@ -700,27 +754,89 @@ export const generateQuizFromSections = async (options, onProgress) => {
   let useChapterMode = false;
 
   if (chapterGroups && chapterGroups.length > 1) {
-    // Chapter structure detected - use proportional distribution
+    // Chapter structure detected - use two-level hierarchy: Chapter -> Topics within chapter
     useChapterMode = true;
-    generationGroups = calculateChapterDistribution(chapterGroups, questionCount);
-    console.log(`[QuizGen] Using CHAPTER-BASED distribution across ${generationGroups.length} chapters:`);
+    console.log(`[QuizGen] Detected ${chapterGroups.length} chapters, discovering topics within each...`);
+    
+    // First, calculate question distribution across chapters
+    const chapterDistribution = calculateChapterDistribution(chapterGroups, questionCount);
+    
+    // Then, discover natural topics within each chapter
+    generationGroups = [];
+    
+    for (const chapter of chapterDistribution) {
+      if (chapter.chunks.length <= 3) {
+        // Small chapter - treat as single topic
+        generationGroups.push({
+          ...chapter,
+          topicLabel: `${chapter.chapterTitle}`,
+          centroid: null
+        });
+      } else {
+        // Discover natural topics within this chapter
+        const chapterTopics = await clusterChunksByTopic(chapter.chunks);
+        
+        if (chapterTopics.length === 1) {
+          // Chapter has one cohesive topic
+          generationGroups.push({
+            ...chapter,
+            chunks: chapterTopics[0].chunks,
+            centroid: chapterTopics[0].centroid,
+            topicLabel: `${chapter.chapterTitle}`
+          });
+        } else {
+          // Distribute chapter's questions across its topics proportionally
+          const totalTopicChunks = chapterTopics.reduce((sum, t) => sum + t.chunks.length, 0);
+          
+          for (let t = 0; t < chapterTopics.length; t++) {
+            const topic = chapterTopics[t];
+            const proportion = topic.chunks.length / totalTopicChunks;
+            const topicQuestions = Math.max(1, Math.round(chapter.targetQuestions * proportion));
+            
+            generationGroups.push({
+              chapterNum: chapter.chapterNum,
+              chapterTitle: chapter.chapterTitle,
+              topicNum: t + 1,
+              topicLabel: `${chapter.chapterTitle} - Topic ${t + 1}`,
+              chunks: topic.chunks,
+              centroid: topic.centroid,
+              targetQuestions: topicQuestions,
+              proportion: (proportion * 100).toFixed(1) + '%'
+            });
+          }
+        }
+      }
+    }
+    
+    // Adjust totals to match requested count
+    let currentTotal = generationGroups.reduce((sum, g) => sum + g.targetQuestions, 0);
+    while (currentTotal < questionCount && generationGroups.length > 0) {
+      generationGroups.sort((a, b) => b.chunks.length - a.chunks.length)[0].targetQuestions++;
+      currentTotal++;
+    }
+    while (currentTotal > questionCount && generationGroups.length > 0) {
+      const largest = generationGroups.sort((a, b) => b.targetQuestions - a.targetQuestions).find(g => g.targetQuestions > 1);
+      if (largest) {
+        largest.targetQuestions--;
+        currentTotal--;
+      } else {
+        break;
+      }
+    }
+    
+    console.log(`[QuizGen] Using CHAPTER->TOPIC hierarchy with ${generationGroups.length} topic groups:`);
     generationGroups.forEach(g => {
-      console.log(`  - ${g.chapterTitle}: ${g.targetQuestions} questions (${g.proportion} of content)`);
+      console.log(`  - ${g.topicLabel || g.chapterTitle}: ${g.targetQuestions} questions`);
     });
   } else {
-    // No chapter structure - use CONTENT-BASED topic clustering
-    // Cluster count is based on content size, NOT quiz size
-    // Aim for ~20-30 chunks per cluster for meaningful topic groupings
-    console.log(`[QuizGen] No chapter structure detected, using content-based topic clustering`);
+    // No chapter structure - use hierarchical clustering to discover natural topics
+    // The algorithm finds topic boundaries based on semantic similarity, not arbitrary numbers
+    console.log(`[QuizGen] No chapter structure detected, discovering natural topic clusters`);
     
-    const CHUNKS_PER_TOPIC = 25; // Target chunks per topic cluster
-    const contentBasedClusters = Math.ceil(allChunks.length / CHUNKS_PER_TOPIC);
-    // Ensure reasonable bounds: min 2 clusters, max 12 clusters
-    const numClusters = Math.max(2, Math.min(12, contentBasedClusters));
+    // clusterChunksByTopic now uses hierarchical clustering to find natural topic boundaries
+    const clusters = await clusterChunksByTopic(allChunks);
     
-    console.log(`[QuizGen] Content has ${allChunks.length} chunks -> ${numClusters} topic clusters`);
-    
-    const clusters = await clusterChunksByTopic(allChunks, numClusters);
+    console.log(`[QuizGen] Discovered ${clusters.length} natural topic clusters from ${allChunks.length} chunks`);
     
     // Distribute questions proportionally across clusters based on cluster size
     // This ensures good coverage even for small quizzes
@@ -976,30 +1092,108 @@ export const generateFlashcardsFromSections = async (options) => {
   let generationGroups;
   let useChapterMode = false;
 
-  // Added explicit null check as groupChunksByChapter returns null for clustering fallback
   if (chapterGroups && chapterGroups.length > 1) {
+    // Chapter structure detected - use two-level hierarchy: Chapter -> Topics within chapter
     useChapterMode = true;
-    generationGroups = calculateChapterDistribution(chapterGroups, count);
-    console.log(`[FlashcardGen] Using CHAPTER-BASED distribution across ${generationGroups.length} chapters`);
+    console.log(`[FlashcardGen] Detected ${chapterGroups.length} chapters, discovering topics within each...`);
+    
+    // First, calculate flashcard distribution across chapters
+    const chapterDistribution = calculateChapterDistribution(chapterGroups, count);
+    
+    // Then, discover natural topics within each chapter
+    generationGroups = [];
+    
+    for (const chapter of chapterDistribution) {
+      if (chapter.chunks.length <= 3) {
+        // Small chapter - treat as single topic
+        generationGroups.push({
+          ...chapter,
+          topicLabel: `${chapter.chapterTitle}`,
+          centroid: null
+        });
+      } else {
+        // Discover natural topics within this chapter
+        const chapterTopics = await clusterChunksByTopic(chapter.chunks);
+        
+        if (chapterTopics.length === 1) {
+          // Chapter has one cohesive topic
+          generationGroups.push({
+            ...chapter,
+            chunks: chapterTopics[0].chunks,
+            centroid: chapterTopics[0].centroid,
+            topicLabel: `${chapter.chapterTitle}`
+          });
+        } else {
+          // Distribute chapter's flashcards across its topics proportionally
+          const totalTopicChunks = chapterTopics.reduce((sum, t) => sum + t.chunks.length, 0);
+          
+          for (let t = 0; t < chapterTopics.length; t++) {
+            const topic = chapterTopics[t];
+            const proportion = topic.chunks.length / totalTopicChunks;
+            const topicCards = Math.max(1, Math.round(chapter.targetQuestions * proportion));
+            
+            generationGroups.push({
+              chapterNum: chapter.chapterNum,
+              chapterTitle: chapter.chapterTitle,
+              topicNum: t + 1,
+              topicLabel: `${chapter.chapterTitle} - Topic ${t + 1}`,
+              chunks: topic.chunks,
+              centroid: topic.centroid,
+              targetQuestions: topicCards,
+              proportion: (proportion * 100).toFixed(1) + '%'
+            });
+          }
+        }
+      }
+    }
+    
+    // Adjust totals to match requested count
+    let currentTotal = generationGroups.reduce((sum, g) => sum + g.targetQuestions, 0);
+    while (currentTotal < count && generationGroups.length > 0) {
+      generationGroups.sort((a, b) => b.chunks.length - a.chunks.length)[0].targetQuestions++;
+      currentTotal++;
+    }
+    while (currentTotal > count && generationGroups.length > 0) {
+      const largest = generationGroups.sort((a, b) => b.targetQuestions - a.targetQuestions).find(g => g.targetQuestions > 1);
+      if (largest) {
+        largest.targetQuestions--;
+        currentTotal--;
+      } else {
+        break;
+      }
+    }
+    
+    console.log(`[FlashcardGen] Using CHAPTER->TOPIC hierarchy with ${generationGroups.length} topic groups`);
   } else {
-    console.log(`[FlashcardGen] No chapter structure, using topic clustering`);
-    const numClusters = Math.min(10, Math.ceil(allChunks.length / MIN_CHUNKS_PER_GROUP));
-    const clusters = await clusterChunksByTopic(allChunks, numClusters);
+    // No chapter structure - use hierarchical clustering to discover natural topics
+    console.log(`[FlashcardGen] No chapter structure, discovering natural topic clusters`);
     
-    const bufferMultiplier = 1.3;
-    const targetPerCluster = Math.ceil((count * bufferMultiplier) / clusters.length);
+    const clusters = await clusterChunksByTopic(allChunks);
     
-    generationGroups = clusters.map((cluster, i) => ({
-      chapterNum: i + 1,
-      chapterTitle: `Topic ${i + 1}`,
-      chunks: cluster.chunks,
-      centroid: cluster.centroid,
-      targetQuestions: targetPerCluster
-    }));
+    console.log(`[FlashcardGen] Discovered ${clusters.length} natural topic clusters from ${allChunks.length} chunks`);
+    
+    // Distribute proportionally based on cluster size
+    const totalClusterChunks = clusters.reduce((sum, c) => sum + c.chunks.length, 0);
+    
+    generationGroups = clusters.map((cluster, i) => {
+      const proportion = cluster.chunks.length / totalClusterChunks;
+      const rawTarget = Math.round(count * proportion);
+      const minPerCluster = count >= clusters.length ? 1 : 0;
+      
+      return {
+        chapterNum: i + 1,
+        chapterTitle: `Topic ${i + 1}`,
+        chunks: cluster.chunks,
+        centroid: cluster.centroid,
+        targetQuestions: Math.max(minPerCluster, rawTarget),
+        proportion: (proportion * 100).toFixed(1) + '%'
+      };
+    });
   }
 
   // 4. Generate flashcards for each group
   const startTime = Date.now();
+  // Buffer to ensure we get enough after deduplication
   const bufferMultiplier = useChapterMode ? 1.5 : 1.3;
   
   // Break down groups into smaller tasks
@@ -1126,7 +1320,7 @@ export const generateFlashcardsFromSections = async (options) => {
     count: finalFlashcards.length,
     flashcards: finalFlashcards,
     stats: {
-      clustersUsed: clusters.length,
+      clustersUsed: generationGroups.length,
       generationTimeMs: generationTime,
       totalGenerated: allFlashcards.length,
       afterDedup: uniqueFlashcards.length

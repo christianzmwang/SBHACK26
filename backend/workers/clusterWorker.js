@@ -3,7 +3,6 @@ import { parentPort } from 'worker_threads';
 // Helper: Calculate cosine similarity
 const cosineSimilarity = (a, b) => {
   if (a.length !== b.length) {
-    // Should not happen if data is consistent, but return 0 to be safe
     return 0;
   }
 
@@ -22,76 +21,108 @@ const cosineSimilarity = (a, b) => {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 };
 
-// Helper: Initialize centroids (K-means++)
-const initializeCentroids = (chunks, k) => {
-  if (chunks.length <= k) {
-    return chunks.map(c => c.embedding);
-  }
-
-  const centroids = [];
-  const usedIndices = new Set();
-
-  // First centroid: random
-  const firstIdx = Math.floor(Math.random() * chunks.length);
-  centroids.push(chunks[firstIdx].embedding);
-  usedIndices.add(firstIdx);
-
-  // Remaining centroids: weighted by distance from existing centroids
-  while (centroids.length < k) {
-    const distances = chunks.map((chunk, idx) => {
-      if (usedIndices.has(idx)) return 0;
-      
-      // Find minimum distance to any existing centroid
-      const minDist = Math.min(
-        ...centroids.map(c => 1 - cosineSimilarity(chunk.embedding, c))
-      );
-      return minDist * minDist; // Square for probability weighting
-    });
-
-    const totalDist = distances.reduce((a, b) => a + b, 0);
-    if (totalDist === 0) break;
-
-    // Weighted random selection
-    let random = Math.random() * totalDist;
-    let selectedIdx = 0;
-    for (let i = 0; i < distances.length; i++) {
-      random -= distances[i];
-      if (random <= 0) {
-        selectedIdx = i;
-        break;
-      }
-    }
-
-    if (!usedIndices.has(selectedIdx)) {
-      centroids.push(chunks[selectedIdx].embedding);
-      usedIndices.add(selectedIdx);
+// Calculate centroid (mean) of embeddings
+const calculateCentroid = (chunks) => {
+  if (chunks.length === 0) return null;
+  
+  const dims = chunks[0].embedding.length;
+  const mean = new Array(dims).fill(0);
+  
+  for (const chunk of chunks) {
+    for (let d = 0; d < dims; d++) {
+      mean[d] += chunk.embedding[d];
     }
   }
-
-  return centroids;
+  
+  for (let d = 0; d < dims; d++) {
+    mean[d] /= chunks.length;
+  }
+  
+  return mean;
 };
 
-// Main clustering function
+// Calculate similarity between two clusters using average linkage
+const clusterSimilarity = (clusterA, clusterB) => {
+  // Use centroid similarity for efficiency (O(1) vs O(n*m) for full linkage)
+  return cosineSimilarity(clusterA.centroid, clusterB.centroid);
+};
+
+/**
+ * Hierarchical Agglomerative Clustering
+ * Discovers natural topic groups based on semantic similarity
+ * 
+ * @param {Array} chunks - Chunks with embeddings
+ * @param {number} similarityThreshold - Stop merging when similarity drops below this (default 0.65)
+ * @param {number} minClusters - Minimum number of clusters to maintain (default 2)
+ */
+const hierarchicalCluster = (chunks, similarityThreshold = 0.65, minClusters = 2) => {
+  if (chunks.length === 0) return [];
+  if (chunks.length === 1) return [{ chunks, centroid: chunks[0].embedding, size: 1 }];
+  
+  // Start with each chunk as its own cluster
+  let clusters = chunks.map((chunk, idx) => ({
+    id: idx,
+    chunks: [chunk],
+    centroid: chunk.embedding,
+    size: 1
+  }));
+  
+  // Iteratively merge most similar clusters until threshold is reached
+  while (clusters.length > minClusters) {
+    // Find the two most similar clusters
+    let bestSim = -1;
+    let bestI = 0;
+    let bestJ = 1;
+    
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const sim = clusterSimilarity(clusters[i], clusters[j]);
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestI = i;
+          bestJ = j;
+        }
+      }
+    }
+    
+    // Stop if best similarity is below threshold - natural topic boundary found
+    if (bestSim < similarityThreshold) {
+      break;
+    }
+    
+    // Merge the two most similar clusters
+    const mergedChunks = [...clusters[bestI].chunks, ...clusters[bestJ].chunks];
+    const mergedCluster = {
+      id: clusters[bestI].id,
+      chunks: mergedChunks,
+      centroid: calculateCentroid(mergedChunks),
+      size: mergedChunks.length
+    };
+    
+    // Remove old clusters and add merged one
+    clusters = clusters.filter((_, idx) => idx !== bestI && idx !== bestJ);
+    clusters.push(mergedCluster);
+  }
+  
+  // Sort by size (largest first)
+  clusters.sort((a, b) => b.size - a.size);
+  
+  return clusters;
+};
+
+// Main clustering function - now uses hierarchical clustering for natural topics
 const clusterChunksByTopic = (chunks, numClusters = 6, minChunksPerGroup = 1) => {
   if (chunks.length === 0) return [];
-  
-  // Adjust cluster count if we have fewer chunks
-  const actualClusters = Math.min(numClusters, Math.ceil(chunks.length / minChunksPerGroup));
-  
-  if (actualClusters <= 1) {
-    return [{ chunks, centroid: null }];
-  }
 
-  // Filter chunks with valid embeddings - handle both array and JSON string formats
+  // Filter chunks with valid embeddings
   const validChunks = chunks.filter(c => {
     if (!c.embedding) return false;
     if (Array.isArray(c.embedding)) return true;
-    // Try to parse if it's a string (PostgreSQL sometimes returns JSON as string)
     if (typeof c.embedding === 'string') {
       try {
         const parsed = JSON.parse(c.embedding);
         if (Array.isArray(parsed)) {
-          c.embedding = parsed; // Replace string with parsed array
+          c.embedding = parsed;
           return true;
         }
       } catch (e) {
@@ -104,86 +135,19 @@ const clusterChunksByTopic = (chunks, numClusters = 6, minChunksPerGroup = 1) =>
   if (validChunks.length === 0) {
     return [{ chunks, centroid: null }];
   }
-
-  // Initialize centroids using k-means++
-  let centroids = initializeCentroids(validChunks, actualClusters);
   
-  // K-means iterations
-  const maxIterations = 10;
-  let assignments = new Array(validChunks.length).fill(0);
-  
-  for (let iter = 0; iter < maxIterations; iter++) {
-    // Assignment step: assign each chunk to nearest centroid
-    const newAssignments = validChunks.map((chunk) => {
-      let bestCluster = 0;
-      let bestSimilarity = -1;
-      
-      for (let c = 0; c < centroids.length; c++) {
-        const similarity = cosineSimilarity(chunk.embedding, centroids[c]);
-        if (similarity > bestSimilarity) {
-          bestSimilarity = similarity;
-          bestCluster = c;
-        }
-      }
-      
-      return bestCluster;
-    });
-
-    // Check for convergence
-    const changed = newAssignments.some((a, i) => a !== assignments[i]);
-    assignments = newAssignments;
-    
-    if (!changed) {
-      break;
-    }
-
-    // Update step: recalculate centroids
-    const newCentroids = [];
-    for (let c = 0; c < centroids.length; c++) {
-      const clusterChunks = validChunks.filter((_, i) => assignments[i] === c);
-      
-      if (clusterChunks.length === 0) {
-        newCentroids.push(centroids[c]); // Keep old centroid
-        continue;
-      }
-
-      // Calculate mean embedding
-      const dims = clusterChunks[0].embedding.length;
-      const mean = new Array(dims).fill(0);
-      
-      for (const chunk of clusterChunks) {
-        for (let d = 0; d < dims; d++) {
-          mean[d] += chunk.embedding[d];
-        }
-      }
-      
-      for (let d = 0; d < dims; d++) {
-        mean[d] /= clusterChunks.length;
-      }
-      
-      newCentroids.push(mean);
-    }
-    
-    centroids = newCentroids;
+  if (validChunks.length <= 2) {
+    return [{ chunks: validChunks, centroid: calculateCentroid(validChunks), size: validChunks.length }];
   }
 
-  // Build cluster objects
-  const clusters = [];
-  for (let c = 0; c < centroids.length; c++) {
-    const clusterChunks = validChunks.filter((_, i) => assignments[i] === c);
-    if (clusterChunks.length > 0) {
-      clusters.push({
-        chunks: clusterChunks,
-        centroid: centroids[c],
-        size: clusterChunks.length
-      });
-    }
-  }
+  // Use hierarchical clustering to find natural topic boundaries
+  // Similarity threshold of 0.65 works well for distinguishing topics
+  // while keeping related content together
+  const naturalClusters = hierarchicalCluster(validChunks, 0.65, 2);
+  
+  console.log(`[Cluster] Discovered ${naturalClusters.length} natural topic clusters from ${validChunks.length} chunks`);
 
-  // Sort clusters by size (largest first) for balanced distribution
-  clusters.sort((a, b) => b.size - a.size);
-
-  return clusters;
+  return naturalClusters;
 };
 
 // Listen for messages
