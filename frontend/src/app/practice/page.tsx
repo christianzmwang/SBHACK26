@@ -802,6 +802,16 @@ export default function PracticePage() {
   // Check if material has chapters selected (for filtering)
   const hasChapterFilter = selectedChapters.size > 0;
 
+  // Helper to find folder by ID
+  const findFolderById = useCallback((folderList: Folder[], folderId: string): Folder | null => {
+    for (const folder of folderList) {
+      if (folder.id === folderId) return folder;
+      const found = findFolderById(folder.subfolders, folderId);
+      if (found) return found;
+    }
+    return null;
+  }, []);
+
   // Get all materials with chapters from selected sections
   const materialsWithChapters = useMemo(() => {
     const result: MaterialStructure[] = [];
@@ -833,17 +843,7 @@ export default function PracticePage() {
     });
 
     return result;
-  }, [selectedMaterials, selectedFolders, materialFolders, sectionStructures]);
-
-  // Helper to find folder by ID
-  const findFolderById = (folderList: Folder[], folderId: string): Folder | null => {
-    for (const folder of folderList) {
-      if (folder.id === folderId) return folder;
-      const found = findFolderById(folder.subfolders, folderId);
-      if (found) return found;
-    }
-    return null;
-  };
+  }, [selectedMaterials, selectedFolders, materialFolders, sectionStructures, findFolderById]);
 
   // Helper to collect all section IDs from a folder
   const collectSectionIds = (folder: Folder, sectionIds: string[]) => {
@@ -1485,10 +1485,19 @@ export default function PracticePage() {
   // Render material item for generation
   // - If parent folder is selected: shows as selected, can't be toggled individually
   // - If parent folder is NOT selected: can be individually selected
+  // - Shows chapter selection inline when material is selected and has chapters
   const renderMaterialItem = (section: MaterialSection, depth: number, parentFolderId: string) => {
     const isParentSelected = isMaterialSelectionDisabled(parentFolderId);
     const isSelected = isMaterialSelected(section.id, parentFolderId);
     const isIndividuallySelected = selectedMaterials.has(section.id) && !isParentSelected;
+    
+    // Get chapter info for this material
+    const structure = sectionStructures.get(section.id);
+    const materialWithChapters = structure?.materials?.find(m => m.hasChapters && m.chapters.length > 0);
+    const hasChapters = !!materialWithChapters;
+    const isExpanded = expandedMaterials.has(materialWithChapters?.id || '');
+    const materialSelectedChapters = materialWithChapters ? selectedChapters.get(materialWithChapters.id) : undefined;
+    const hasChapterFilter = materialSelectedChapters && materialSelectedChapters.size > 0;
 
     const handleMaterialClick = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -1496,54 +1505,148 @@ export default function PracticePage() {
         toggleMaterialSelection(section.id);
       }
     };
+    
+    const handleExpandClick = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (materialWithChapters) {
+        toggleMaterialExpansion(materialWithChapters.id);
+      }
+    };
 
     return (
-      <div
-        key={section.id}
-        className={`flex items-center gap-3 px-3 py-2 transition ${
-          isSelected 
-            ? isParentSelected 
-              ? 'bg-indigo-900/20 border-l-2 border-indigo-500/50 opacity-60' 
-              : 'bg-indigo-900/30 border-l-2 border-indigo-500'
-            : 'hover:bg-slate-800/50'
-        } ${isParentSelected ? 'cursor-not-allowed' : 'cursor-pointer'}`}
-        style={{ paddingLeft: `${depth * 20 + 12}px` }}
-        onClick={handleMaterialClick}
-      >
-        <div className="w-5" />
-
-        <button
-          type="button"
+      <div key={section.id}>
+        <div
+          className={`flex items-center gap-3 px-3 py-2 transition ${
+            isSelected 
+              ? isParentSelected 
+                ? 'bg-indigo-900/20 border-l-2 border-indigo-500/50 opacity-60' 
+                : 'bg-indigo-900/30 border-l-2 border-indigo-500'
+              : 'hover:bg-slate-800/50'
+          } ${isParentSelected ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+          style={{ paddingLeft: `${depth * 20 + 12}px` }}
           onClick={handleMaterialClick}
-          disabled={isParentSelected}
-          className={`w-5 h-5 border rounded flex items-center justify-center transition flex-shrink-0 ${
-            isSelected
-              ? isParentSelected
-                ? 'bg-indigo-600/50 border-indigo-600/50 cursor-not-allowed'
-                : 'bg-indigo-600 border-indigo-600 cursor-pointer'
-              : 'border-slate-600 hover:border-slate-400 cursor-pointer'
-          }`}
         >
-          {isSelected && (
-            <svg xmlns="http://www.w3.org/2000/svg" className={`h-3 w-3 ${isParentSelected ? 'text-white/70' : 'text-white'}`} viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-            </svg>
+          {/* Expand arrow for materials with chapters */}
+          {hasChapters && isSelected ? (
+            <button
+              onClick={handleExpandClick}
+              className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-white transition cursor-pointer"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className={`h-4 w-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          ) : (
+            <div className="w-5" />
           )}
-        </button>
 
-        <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 flex-shrink-0 ${isSelected ? 'text-slate-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-        </svg>
+          <button
+            type="button"
+            onClick={handleMaterialClick}
+            disabled={isParentSelected}
+            className={`w-5 h-5 border rounded flex items-center justify-center transition flex-shrink-0 ${
+              isSelected
+                ? isParentSelected
+                  ? 'bg-indigo-600/50 border-indigo-600/50 cursor-not-allowed'
+                  : 'bg-indigo-600 border-indigo-600 cursor-pointer'
+                : 'border-slate-600 hover:border-slate-400 cursor-pointer'
+            }`}
+          >
+            {isSelected && (
+              <svg xmlns="http://www.w3.org/2000/svg" className={`h-3 w-3 ${isParentSelected ? 'text-white/70' : 'text-white'}`} viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+              </svg>
+            )}
+          </button>
 
-        <div className="flex-1 min-w-0">
-          <span className={isSelected ? 'text-slate-300' : 'text-slate-400'}>{section.title}</span>
-          <span className="text-slate-600 text-sm ml-2">
-            {section.files.length} file{section.files.length !== 1 ? 's' : ''}
-          </span>
-          {isParentSelected && isSelected && (
-            <span className="text-indigo-400 text-xs ml-2">(included in folder)</span>
-          )}
+          <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 flex-shrink-0 ${isSelected ? 'text-slate-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <span className={isSelected ? 'text-slate-300' : 'text-slate-400'}>{section.title}</span>
+            <span className="text-slate-600 text-sm">
+              {section.files.length} file{section.files.length !== 1 ? 's' : ''}
+            </span>
+            {isParentSelected && isSelected && (
+              <span className="text-indigo-400 text-xs">(included in folder)</span>
+            )}
+            {hasChapters && isSelected && (
+              <span className="text-slate-500 text-xs">
+                • {materialWithChapters?.chapters.length} chapters
+              </span>
+            )}
+            {hasChapterFilter && (
+              <span className="text-xs bg-indigo-600 px-1.5 py-0.5 rounded text-white">
+                {materialSelectedChapters?.size} selected
+              </span>
+            )}
+          </div>
         </div>
+        
+        {/* Inline chapter selection */}
+        {hasChapters && isSelected && isExpanded && materialWithChapters && (
+          <div 
+            className="border-l-2 border-indigo-500/30 bg-slate-900/50"
+            style={{ marginLeft: `${depth * 20 + 32}px` }}
+          >
+            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between">
+              <span className="text-xs text-slate-400">Filter by chapters (optional)</span>
+              <div className="flex gap-2">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    selectAllChapters(materialWithChapters.id, materialWithChapters.chapters);
+                  }}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                >
+                  All
+                </button>
+                <span className="text-slate-600">|</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    clearChapterSelection(materialWithChapters.id);
+                  }}
+                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                >
+                  None
+                </button>
+              </div>
+            </div>
+            <div className="max-h-48 overflow-y-auto">
+              {materialWithChapters.chapters.map(chapter => {
+                const isChapterSelected = materialSelectedChapters?.has(chapter.number) || false;
+                return (
+                  <label
+                    key={chapter.number}
+                    className="flex items-center gap-3 px-4 py-2 hover:bg-slate-800/50 cursor-pointer group"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChapterSelected}
+                      onChange={() => toggleChapterSelection(materialWithChapters.id, chapter.number)}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
+                    />
+                    <div className="flex-1 min-w-0 flex items-center gap-2">
+                      <span className="text-sm text-slate-300 group-hover:text-white transition">
+                        {chapter.isGeneratedTopic ? '' : `Ch ${chapter.number}: `}{chapter.title}
+                      </span>
+                      <span className="text-xs text-slate-500">({chapter.percentage})</span>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -2389,7 +2492,7 @@ export default function PracticePage() {
   // =====================
   if (viewMode === 'generate') {
     return (
-      <div className="h-full overflow-hidden -mt-4">
+      <div className="h-full overflow-hidden -mt-4 flex flex-col">
         {error && (
           <div className="mb-4 bg-red-900/30 border border-red-500 px-4 py-3 text-red-300 flex justify-between items-center">
             <span>{error}</span>
@@ -2397,17 +2500,15 @@ export default function PracticePage() {
           </div>
         )}
 
-        <div className="mb-6 flex items-center justify-between">
+        {/* Header */}
+        <div className="mb-4 flex items-center justify-between flex-shrink-0">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
               Create Practice Set
             </p>
             <h1 className="mt-1 text-2xl font-semibold text-white">
-              Generate questions from your materials
+              Select materials and generate
             </h1>
-            <p className="mt-1 text-slate-400 text-sm">
-              Practice sets can be used as Multiple Choice, True/False, or Flashcards
-            </p>
           </div>
           <button
             onClick={() => setViewMode(previousView === 'folder' ? 'folder' : 'overview')}
@@ -2420,210 +2521,80 @@ export default function PracticePage() {
           </button>
         </div>
 
-        <div className="flex gap-6 h-[calc(100%-120px)]">
-          {/* Left: Material selection */}
-          <div className="flex-1 flex flex-col border border-slate-800 bg-black overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/50">
-              <div className="text-sm text-slate-400">
-                <span className="text-white font-medium">{totalSelectedCount}</span> item{totalSelectedCount !== 1 ? 's' : ''} selected
-                {selectedFileCount > 0 && (
-                  <span className="ml-2">
-                    (<span className="text-white">{selectedFileCount}</span> file{selectedFileCount !== 1 ? 's' : ''})
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button onClick={selectAll} className="text-xs text-slate-400 hover:text-white transition cursor-pointer">
-                  Select All
+        {/* Settings bar - above the tree */}
+        <div className="flex-shrink-0 mb-4 border border-slate-800 bg-black p-4">
+          <div className="flex flex-wrap gap-4 items-end">
+            {/* Generation type - horizontal pills */}
+            <div className="flex-shrink-0">
+              <label className="text-xs text-slate-400 block mb-2">Type</label>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setSelectedGenerationType('multiple_choice')}
+                  className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${
+                    selectedGenerationType === 'multiple_choice'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'
+                  }`}
+                >
+                  Multiple Choice
                 </button>
-                <span className="text-slate-600">|</span>
-                <button onClick={clearSelection} className="text-xs text-slate-400 hover:text-white transition cursor-pointer">
-                  Clear
+                <button
+                  onClick={() => setSelectedGenerationType('true_false')}
+                  className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${
+                    selectedGenerationType === 'true_false'
+                      ? 'bg-green-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'
+                  }`}
+                >
+                  True/False
+                </button>
+                <button
+                  onClick={() => setSelectedGenerationType('flashcards')}
+                  className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${
+                    selectedGenerationType === 'flashcards'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'
+                  }`}
+                >
+                  Flashcards
                 </button>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
-              {materialFolders.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full text-center p-8">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-slate-600 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                  </svg>
-                  <p className="text-slate-400 mb-2">No materials yet</p>
-                  <p className="text-slate-500 text-sm">
-                    Upload course materials first to generate practice content.
-                  </p>
-                  <a
-                    href="/course-material"
-                    className="mt-4 inline-block bg-white px-4 py-2 text-sm text-black font-semibold hover:bg-slate-200 transition cursor-pointer"
-                  >
-                    Go to Course Materials
-                  </a>
-                </div>
-              ) : (
-                <div className="py-2">
-                  {materialFolders.map(folder => renderFolderTree(folder))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Right: Generation options */}
-          <div className="w-80 flex flex-col gap-4">
             {/* Name input */}
-            <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">Set Name (Optional)</h3>
+            <div className="flex-1 min-w-[200px]">
+              <label className="text-xs text-slate-400 block mb-2">Name (optional)</label>
               <input
                 type="text"
                 value={practiceNameInput}
                 onChange={(e) => setPracticeNameInput(e.target.value)}
                 placeholder="Enter a name..."
-                className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+                className="w-full bg-slate-900 border border-slate-700 px-3 py-1.5 text-white text-sm focus:outline-none focus:border-indigo-500"
               />
             </div>
 
-            {/* Set size input */}
-            <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">
-                {selectedGenerationType === 'flashcards' ? 'Number of Cards' : 'Number of Questions'}
-              </h3>
-              <div className="flex items-center gap-3">
-                <input
-                  type="number"
-                  value={setSize}
-                  onChange={(e) => setSetSize(e.target.value)}
-                  min="5"
-                  max="100"
-                  className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
-                />
-                <span className="text-slate-400 text-sm">
-                  {selectedGenerationType === 'flashcards' ? 'cards' : 'questions'}
-                </span>
-              </div>
-              <p className="text-slate-500 text-xs mt-2">Min: 5, Max: 100</p>
+            {/* Count input */}
+            <div className="w-32">
+              <label className="text-xs text-slate-400 block mb-2">
+                {selectedGenerationType === 'flashcards' ? 'Cards' : 'Questions'}
+              </label>
+              <input
+                type="number"
+                value={setSize}
+                onChange={(e) => setSetSize(e.target.value)}
+                min="5"
+                max="100"
+                className="w-full bg-slate-900 border border-slate-700 px-3 py-1.5 text-white text-sm focus:outline-none focus:border-indigo-500"
+              />
             </div>
 
-            {/* Chapter selection - only show when materials with chapters are selected */}
-            {materialsWithChapters.length > 0 && (
-              <div className="border border-slate-800 bg-black p-4 max-h-64 overflow-y-auto">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-white">Filter by Chapters</h3>
-                  {hasChapterFilter && (
-                    <button
-                      onClick={() => setSelectedChapters(new Map())}
-                      className="text-xs text-slate-400 hover:text-white transition cursor-pointer"
-                    >
-                      Clear filters
-                    </button>
-                  )}
-                </div>
-                <p className="text-slate-500 text-xs mb-3">
-                  {hasChapterFilter 
-                    ? `Filtering by ${Array.from(selectedChapters.values()).reduce((sum, s) => sum + s.size, 0)} selected chapter(s)` 
-                    : 'Select specific chapters or leave empty to use all content'}
-                </p>
-                
-                <div className="space-y-3">
-                  {materialsWithChapters.map(material => {
-                    const isExpanded = expandedMaterials.has(material.id);
-                    const materialSelectedChapters = selectedChapters.get(material.id);
-                    const hasFilter = materialSelectedChapters && materialSelectedChapters.size > 0;
-                    
-                    return (
-                      <div key={material.id} className="border border-slate-700 bg-slate-900/50">
-                        <button
-                          onClick={() => toggleMaterialExpansion(material.id)}
-                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/50 transition cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                            </svg>
-                            <span className="text-sm text-white truncate">{material.title || material.fileName}</span>
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            {hasFilter && (
-                              <span className="text-xs bg-indigo-600 px-1.5 py-0.5 rounded text-white">
-                                {materialSelectedChapters.size}/{material.chapters.length}
-                              </span>
-                            )}
-                            <span className="text-xs text-slate-500">{material.chapters.length} ch</span>
-                          </div>
-                        </button>
-                        
-                        {isExpanded && (
-                          <div className="px-3 pb-3 pt-1 border-t border-slate-700">
-                            <div className="flex items-center justify-between mb-2">
-                              <span className="text-xs text-slate-400">Select chapters:</span>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => selectAllChapters(material.id, material.chapters)}
-                                  className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
-                                >
-                                  All
-                                </button>
-                                <span className="text-slate-600">|</span>
-                                <button
-                                  onClick={() => clearChapterSelection(material.id)}
-                                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
-                                >
-                                  None
-                                </button>
-                              </div>
-                            </div>
-                            <div className="space-y-1 max-h-32 overflow-y-auto">
-                              {material.chapters.map(chapter => {
-                                const isSelected = materialSelectedChapters?.has(chapter.number) || false;
-                                return (
-                                  <label
-                                    key={chapter.number}
-                                    className="flex items-center gap-2 px-2 py-1.5 hover:bg-slate-800/50 cursor-pointer group"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => toggleChapterSelection(material.id, chapter.number)}
-                                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
-                                    />
-                                    <div className="flex-1 min-w-0">
-                                      <span className="text-sm text-white group-hover:text-indigo-300 transition">
-                                        {chapter.isGeneratedTopic ? '' : `Ch ${chapter.number}: `}{chapter.title}
-                                      </span>
-                                      <span className="text-xs text-slate-500 ml-2">({chapter.percentage})</span>
-                                    </div>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                
-                {loadingStructures.size > 0 && (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
-                    <div className="animate-spin h-3 w-3 border-2 border-slate-400 border-t-transparent rounded-full" />
-                    Loading chapter information...
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Save to folder */}
-            <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">Save to Folder (Optional)</h3>
+            <div className="w-48">
+              <label className="text-xs text-slate-400 block mb-2">Save to folder</label>
               <select
                 value={saveToPracticeFolder || ''}
                 onChange={(e) => setSaveToPracticeFolder(e.target.value || null)}
-                className="w-full bg-slate-900 border border-slate-700 px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+                className="w-full bg-slate-900 border border-slate-700 px-3 py-1.5 text-white text-sm focus:outline-none focus:border-indigo-500"
               >
                 <option value="">No folder</option>
                 {practiceOverview?.folders.map(folder => (
@@ -2631,136 +2602,112 @@ export default function PracticePage() {
                 ))}
               </select>
             </div>
+          </div>
+        </div>
 
-            {/* Generation type selector */}
-            <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">What to Generate</h3>
-              <div className="space-y-2">
-                <label 
-                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
-                    selectedGenerationType === 'multiple_choice' 
-                      ? 'border-blue-500 bg-blue-500/10' 
-                      : 'border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="generationType"
-                    value="multiple_choice"
-                    checked={selectedGenerationType === 'multiple_choice'}
-                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
-                    className="sr-only"
-                  />
-                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                    selectedGenerationType === 'multiple_choice' 
-                      ? 'border-blue-500' 
-                      : 'border-slate-500'
-                  }`}>
-                    {selectedGenerationType === 'multiple_choice' && (
-                      <div className="w-2 h-2 rounded-full bg-blue-500" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <span className="text-blue-400 font-medium">Multiple Choice</span>
-                    <p className="text-xs text-slate-500 mt-0.5">A, B, C, D answer options</p>
-                  </div>
-                </label>
-                
-                <label 
-                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
-                    selectedGenerationType === 'true_false' 
-                      ? 'border-green-500 bg-green-500/10' 
-                      : 'border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="generationType"
-                    value="true_false"
-                    checked={selectedGenerationType === 'true_false'}
-                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
-                    className="sr-only"
-                  />
-                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                    selectedGenerationType === 'true_false' 
-                      ? 'border-green-500' 
-                      : 'border-slate-500'
-                  }`}>
-                    {selectedGenerationType === 'true_false' && (
-                      <div className="w-2 h-2 rounded-full bg-green-500" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <span className="text-green-400 font-medium">True / False</span>
-                    <p className="text-xs text-slate-500 mt-0.5">Statement verification questions</p>
-                  </div>
-                </label>
-                
-                <label 
-                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
-                    selectedGenerationType === 'flashcards' 
-                      ? 'border-purple-500 bg-purple-500/10' 
-                      : 'border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="generationType"
-                    value="flashcards"
-                    checked={selectedGenerationType === 'flashcards'}
-                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
-                    className="sr-only"
-                  />
-                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                    selectedGenerationType === 'flashcards' 
-                      ? 'border-purple-500' 
-                      : 'border-slate-500'
-                  }`}>
-                    {selectedGenerationType === 'flashcards' && (
-                      <div className="w-2 h-2 rounded-full bg-purple-500" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <span className="text-purple-400 font-medium">Flashcards</span>
-                    <p className="text-xs text-slate-500 mt-0.5">Front/back cards for memorization</p>
-                  </div>
-                </label>
-              </div>
+        {/* Material selection tree - takes up remaining space */}
+        <div className="flex-1 flex flex-col border border-slate-800 bg-black overflow-hidden min-h-0">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/50 flex-shrink-0">
+            <div className="text-sm text-slate-400">
+              <span className="text-white font-medium">{totalSelectedCount}</span> item{totalSelectedCount !== 1 ? 's' : ''} selected
+              {selectedFileCount > 0 && (
+                <span className="ml-2">
+                  (<span className="text-white">{selectedFileCount}</span> file{selectedFileCount !== 1 ? 's' : ''})
+                </span>
+              )}
+              {hasChapterFilter && (
+                <span className="ml-2 text-indigo-400">
+                  • {Array.from(selectedChapters.values()).reduce((sum, s) => sum + s.size, 0)} chapter filter{Array.from(selectedChapters.values()).reduce((sum, s) => sum + s.size, 0) !== 1 ? 's' : ''}
+                </span>
+              )}
             </div>
-
-            {/* Generate button */}
-            <button
-              onClick={handleGenerate}
-              disabled={isGenerating || totalSelectedCount === 0}
-              className="w-full bg-white py-3 text-black font-semibold transition hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2"
-            >
-              {isGenerating ? (
+            <div className="flex gap-2">
+              {hasChapterFilter && (
                 <>
-                  <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
-                  Generating...
-                </>
-              ) : (
-                <>
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  {selectedGenerationType === 'multiple_choice' && 'Generate Multiple Choice'}
-                  {selectedGenerationType === 'true_false' && 'Generate True/False'}
-                  {selectedGenerationType === 'flashcards' && 'Generate Flashcards'}
+                  <button 
+                    onClick={() => setSelectedChapters(new Map())} 
+                    className="text-xs text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
+                  >
+                    Clear Chapters
+                  </button>
+                  <span className="text-slate-600">|</span>
                 </>
               )}
-            </button>
-            
-            {/* Loading message with helpful info */}
-            {isGenerating && (
-              <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
-                <p className="font-medium mb-1">🎯 {generationStatus || 'Generating your practice set...'}</p>
-                <p className="text-xs text-indigo-300/80">
-                  This typically takes 1-2 minutes. For large content selections, it may take longer.
+              <button onClick={selectAll} className="text-xs text-slate-400 hover:text-white transition cursor-pointer">
+                Select All
+              </button>
+              <span className="text-slate-600">|</span>
+              <button onClick={clearSelection} className="text-xs text-slate-400 hover:text-white transition cursor-pointer">
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {materialFolders.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-center p-8">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-slate-600 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                <p className="text-slate-400 mb-2">No materials yet</p>
+                <p className="text-slate-500 text-sm">
+                  Upload course materials first to generate practice content.
                 </p>
+                <a
+                  href="/course-material"
+                  className="mt-4 inline-block bg-white px-4 py-2 text-sm text-black font-semibold hover:bg-slate-200 transition cursor-pointer"
+                >
+                  Go to Course Materials
+                </a>
+              </div>
+            ) : (
+              <div className="py-2">
+                {materialFolders.map(folder => renderFolderTree(folder))}
               </div>
             )}
           </div>
+          
+          {loadingStructures.size > 0 && (
+            <div className="px-4 py-2 border-t border-slate-800 bg-slate-900/50 flex items-center gap-2 text-xs text-slate-400 flex-shrink-0">
+              <div className="animate-spin h-3 w-3 border-2 border-slate-400 border-t-transparent rounded-full" />
+              Loading chapter information...
+            </div>
+          )}
+        </div>
+
+        {/* Generate button - at the bottom */}
+        <div className="flex-shrink-0 mt-4">
+          <button
+            onClick={handleGenerate}
+            disabled={isGenerating || totalSelectedCount === 0}
+            className="w-full bg-white py-3 text-black font-semibold transition hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2"
+          >
+            {isGenerating ? (
+              <>
+                <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                {selectedGenerationType === 'multiple_choice' && 'Generate Multiple Choice'}
+                {selectedGenerationType === 'true_false' && 'Generate True/False'}
+                {selectedGenerationType === 'flashcards' && 'Generate Flashcards'}
+              </>
+            )}
+          </button>
+          
+          {/* Loading message with helpful info */}
+          {isGenerating && (
+            <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
+              <p className="font-medium mb-1">🎯 {generationStatus || 'Generating your practice set...'}</p>
+              <p className="text-xs text-indigo-300/80">
+                This typically takes 1-2 minutes. For large content selections, it may take longer.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2880,38 +2827,41 @@ export default function PracticePage() {
                     className="group border border-slate-800 bg-black p-5 hover:border-slate-600 hover:bg-slate-900/50 transition"
                   >
                     <div className="flex items-center gap-4">
-                      <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-slate-800 flex items-center justify-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div className={`flex-shrink-0 w-12 h-12 rounded-lg flex items-center justify-center ${
+                        quiz.question_type === 'true_false' ? 'bg-green-900/50' : 'bg-blue-900/50'
+                      }`}>
+                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-6 w-6 ${
+                          quiz.question_type === 'true_false' ? 'text-green-400' : 'text-blue-400'
+                        }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                         </svg>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <h3 className="text-white font-medium text-base">{quiz.name}</h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-white font-medium text-base">{quiz.name}</h3>
+                          <span className={`text-xs px-2 py-0.5 rounded ${
+                            quiz.question_type === 'true_false' 
+                              ? 'bg-green-900/50 text-green-400' 
+                              : 'bg-blue-900/50 text-blue-400'
+                          }`}>
+                            {quiz.question_type === 'true_false' ? 'T/F' : 'MC'}
+                          </span>
+                        </div>
                         <p className="text-slate-500 text-sm mt-0.5">
                           {quiz.total_questions} questions • {formatDate(quiz.created_at)}
                         </p>
                       </div>
-                      {/* Practice mode buttons */}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => loadQuiz(quiz.id, 'multiple_choice')}
-                          className="px-3 py-1.5 text-xs font-medium border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
-                        >
-                          Multiple Choice
-                        </button>
-                        <button
-                          onClick={() => loadQuiz(quiz.id, 'true_false')}
-                          className="px-3 py-1.5 text-xs font-medium border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
-                        >
-                          True/False
-                        </button>
-                        <button
-                          onClick={() => loadQuiz(quiz.id, 'flashcards')}
-                          className="px-3 py-1.5 text-xs font-medium border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
-                        >
-                          Flashcards
-                        </button>
-                      </div>
+                      {/* Practice button - shows correct type based on quiz */}
+                      <button
+                        onClick={() => loadQuiz(quiz.id, quiz.question_type || 'multiple_choice')}
+                        className={`px-4 py-2 text-sm font-medium transition cursor-pointer ${
+                          quiz.question_type === 'true_false'
+                            ? 'bg-green-600 hover:bg-green-500 text-white'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                        }`}
+                      >
+                        {quiz.question_type === 'true_false' ? 'Practice True/False' : 'Practice Multiple Choice'}
+                      </button>
                       {/* Circular progress indicator */}
                       <div className="flex-shrink-0 relative w-14 h-14 flex items-center justify-center">
                         <svg className="w-14 h-14 transform -rotate-90">
@@ -3316,16 +3266,24 @@ export default function PracticePage() {
                 <div
                   key={quiz.id}
                   className="group border border-slate-800 bg-black p-4 transition hover:border-slate-600 hover:bg-slate-900/50 cursor-pointer"
-                  onClick={() => loadQuiz(quiz.id)}
+                  onClick={() => loadQuiz(quiz.id, quiz.question_type || 'multiple_choice')}
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 bg-slate-800 rounded flex items-center justify-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div className={`w-8 h-8 rounded flex items-center justify-center ${
+                        quiz.question_type === 'true_false' ? 'bg-green-900/50' : 'bg-blue-900/50'
+                      }`}>
+                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${
+                          quiz.question_type === 'true_false' ? 'text-green-400' : 'text-blue-400'
+                        }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                         </svg>
                       </div>
-                      <span className="text-xs text-slate-400 font-medium uppercase">Quiz</span>
+                      <span className={`text-xs font-medium uppercase ${
+                        quiz.question_type === 'true_false' ? 'text-green-400' : 'text-blue-400'
+                      }`}>
+                        {quiz.question_type === 'true_false' ? 'True/False' : 'Multiple Choice'}
+                      </span>
                     </div>
                     <button
                       onClick={(e) => {
