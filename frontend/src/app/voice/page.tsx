@@ -191,16 +191,25 @@ export default function VoicePage() {
 
       // Get temporary Deepgram token from our backend
       const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      console.log('Fetching token from:', `${backendUrl}/api/voice/token`);
+
       const response = await fetch(`${backendUrl}/api/voice/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
       });
+
+      console.log('Token response status:', response.status);
+
       if (!response.ok) {
-        throw new Error("Failed to get Deepgram token");
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('Token request failed:', errorData);
+        throw new Error(`Failed to get Deepgram token: ${errorData.error || response.statusText}`);
       }
+
       const { access_token } = await response.json();
+      console.log('Successfully received token:', access_token ? 'Yes' : 'No');
 
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({
