@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
 import VoiceAgent, { type VoiceAction, type VoiceAgentRef } from "@/app/components/VoiceAgent";
 import { useData } from "@/app/context/DataContext";
 import {
@@ -49,6 +50,7 @@ interface SelectableItem {
 
 export default function PracticePage() {
   const { data: session } = useSession();
+  const searchParams = useSearchParams();
   const { 
     folders: materialFolders, 
     practiceOverview, 
@@ -57,6 +59,14 @@ export default function PracticePage() {
     refreshPracticeOverview 
   } = useData();
   const [viewMode, setViewMode] = useState<ViewMode>('overview');
+  
+  // Handle URL query params for direct navigation
+  useEffect(() => {
+    const view = searchParams.get('view');
+    if (view === 'generate') {
+      setViewMode('generate');
+    }
+  }, [searchParams]);
   
   // Material folders for generation (managed by DataContext)
   // const [materialFolders, setMaterialFolders] = useState<Folder[]>([]);

@@ -65,6 +65,9 @@ interface VoiceAgentProps {
   isOpen: boolean;
   onClose: () => void;
   onAction?: (action: VoiceAction) => void;
+  onListeningChange?: (isListening: boolean) => void;
+  onSpeakingChange?: (isSpeaking: boolean) => void;
+  onConnectedChange?: (isConnected: boolean) => void;
 }
 
 interface Caption {
@@ -74,10 +77,38 @@ interface Caption {
   type: 'user' | 'assistant' | 'system';
 }
 
-const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgent({ context, userId, isOpen, onClose, onAction }, ref) {
-  const [isConnected, setIsConnected] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgent({ context, userId, isOpen, onClose, onAction, onListeningChange, onSpeakingChange, onConnectedChange }, ref) {
+  const [isConnected, setIsConnectedState] = useState(false);
+  const [isListening, setIsListeningState] = useState(false);
+  const [isSpeaking, setIsSpeakingState] = useState(false);
+
+  // Wrapper functions to call callbacks when state changes
+  const setIsConnected = useCallback((value: boolean) => {
+    setIsConnectedState(prev => {
+      if (value !== prev) {
+        onConnectedChange?.(value);
+      }
+      return value;
+    });
+  }, [onConnectedChange]);
+
+  const setIsListening = useCallback((value: boolean) => {
+    setIsListeningState(prev => {
+      if (value !== prev) {
+        onListeningChange?.(value);
+      }
+      return value;
+    });
+  }, [onListeningChange]);
+
+  const setIsSpeaking = useCallback((value: boolean) => {
+    setIsSpeakingState(prev => {
+      if (value !== prev) {
+        onSpeakingChange?.(value);
+      }
+      return value;
+    });
+  }, [onSpeakingChange]);
   const [captions, setCaptions] = useState<Caption[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
