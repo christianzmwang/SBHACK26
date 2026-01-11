@@ -461,7 +461,7 @@ const generateQuestionsForCluster = async (cluster, options) => {
     clusterIndex,
     totalClusters,
     chapterInfo
-  });
+  }, context);
 
   const label = chapterInfo ? `Ch${chapterInfo.number}: ${chapterInfo.title}` : `Cluster ${clusterIndex + 1}/${totalClusters}`;
   console.log(`[${label}] Generating ${count} questions from ${contentChunks.length} chunks`);
@@ -479,7 +479,8 @@ const generateQuestionsForCluster = async (cluster, options) => {
       }
 
       // Call LLM with JSON mode enabled
-      const response = await callLLM(context, prompt, { jsonMode: true });
+      // Pass empty string for text, prompt contains the context to avoid default "Content:" wrapping
+      const response = await callLLM('', prompt, { jsonMode: true });
 
       if (!response || typeof response !== 'string') {
         throw new Error('Empty or invalid LLM response');
@@ -583,7 +584,7 @@ const generateQuestionsForCluster = async (cluster, options) => {
 /**
  * Build the prompt for question generation
  */
-const buildQuestionPrompt = (options) => {
+const buildQuestionPrompt = (options, contextContent) => {
   const {
     count,
     questionType,
@@ -608,20 +609,18 @@ const buildQuestionPrompt = (options) => {
   // Chapter-aware context or topic cluster context
   let contextGuide;
   if (chapterInfo) {
-    contextGuide = `\nYou are generating questions from Chapter ${chapterInfo.number}: "${chapterInfo.title}".
-Focus on the key concepts, definitions, and ideas from this chapter.
-Ensure questions test understanding of this chapter's material specifically.`;
+    contextGuide = `\nSOURCE MATERIAL CONTEXT:\nYou are generating questions from Chapter ${chapterInfo.number}: "${chapterInfo.title}".`;
   } else if (totalClusters > 1) {
-    contextGuide = `\nYou are generating questions for topic area ${clusterIndex + 1} of ${totalClusters}. Focus on the specific concepts in this content section.`;
+    contextGuide = `\nSOURCE MATERIAL CONTEXT:\nYou are generating questions for topic area ${clusterIndex + 1} of ${totalClusters}.`;
   } else {
-    contextGuide = '';
+    contextGuide = '\nSOURCE MATERIAL CONTEXT:\nUse the provided content as the source of facts.';
   }
 
   let formatGuide;
   if (questionType === 'multiple_choice') {
     formatGuide = `Generate exactly ${count} multiple-choice questions.
 Each question must have:
-- A clear question
+- A clear question asking about a fact or concept
 - 4 options (A, B, C, D)
 - One correct answer
 - A brief explanation
@@ -629,94 +628,94 @@ Each question must have:
 JSON format:
 [
   {
-    "question": "Question text here?",
-    "options": {"A": "Option A", "B": "Option B", "C": "Option C", "D": "Option D"},
+    "question": "What is the primary function of mitochondria?",
+    "options": {"A": "Energy production", "B": "Protein synthesis", "C": "Waste removal", "D": "Cell division"},
     "correct_answer": "A",
-    "explanation": "Brief explanation of why A is correct",
+    "explanation": "Mitochondria are known as the powerhouse of the cell because they generate most of the cell's supply of adenosine triphosphate (ATP).",
     "difficulty": "medium",
-    "topic": "Specific topic from this content"
+    "topic": "Cell Biology"
   }
 ]`;
   } else if (questionType === 'true_false') {
     formatGuide = `Generate exactly ${count} true/false questions.
 Each question must have:
-- A statement that is either true or false
+- A statement that is either true or false (stated as a fact)
 - The correct answer (true or false)
 - An explanation
 
 JSON format:
 [
   {
-    "question": "Statement here",
-    "correct_answer": "true",
-    "explanation": "Why this is true/false",
+    "question": "Mitochondria are responsible for protein synthesis.",
+    "correct_answer": "false",
+    "explanation": "Ribosomes are responsible for protein synthesis, while mitochondria generate energy.",
     "difficulty": "medium"
   }
 ]`;
   } else if (questionType === 'flashcard') {
     formatGuide = `Generate exactly ${count} flashcards.
 Each flashcard must have:
-- A front (question or term)
-- A back (answer or definition)
+- A front (concept, term, or question)
+- A back (definition, answer, or explanation)
 
 JSON format:
 [
   {
-    "front": "Term or question",
-    "back": "Definition or answer",
-    "topic": "Specific topic"
+    "front": "Mitochondria",
+    "back": "Organelle that generates most of the chemical energy needed to power the cell's biochemical reactions (ATP).",
+    "topic": "Cell Biology"
   }
 ]`;
   } else {
     formatGuide = `Generate exactly ${count} short-answer questions.
 Each question must have:
-- A clear question
+- A clear direct question
 - A model answer
 - Key points
 
 JSON format:
 [
   {
-    "question": "Question text?",
-    "model_answer": "Expected answer",
-    "key_points": ["point 1", "point 2"],
+    "question": "How do mitochondria generate energy?",
+    "model_answer": "Mitochondria generate energy through oxidative phosphorylation...",
+    "key_points": ["oxidative phosphorylation", "ATP production", "inner membrane"],
     "difficulty": "medium"
   }
 ]`;
   }
 
-  return `You are creating educational quiz questions to test understanding of the subject matter.
+  return `You are an expert educator creating a high-quality quiz.
 ${contextGuide}
 
-CRITICAL OUTPUT FORMAT REQUIREMENT:
-- You MUST respond with ONLY a valid JSON array
-- Do NOT include any text before or after the JSON array
-- Do NOT use markdown code blocks
-- Start your response with [ and end with ]
+SOURCE CONTENT:
+"""
+${contextContent}
+"""
 
-STRICT PROHIBITION (Zero Tolerance):
-- ABSOLUTELY NO references to "the text", "the passage", "the document", "the author", "as mentioned in", etc.
-- Questions MUST be written as objective facts about the world/subject, NEVER as reading comprehension questions about a specific text snippet.
-- BAD: "According to the text, what is archaeology?"
-- GOOD: "What is archaeology?"
-- BAD: "The passage describes which process?"
-- GOOD: "Which process involves...?"
+INSTRUCTIONS:
+1. Extract key facts, concepts, and relationships from the SOURCE CONTENT above.
+2. Create ${count} ${questionType} questions based on these facts.
 
-Write questions as if you are a subject matter expert testing knowledge, NOT as if you are testing reading comprehension of a document.
+CRITICAL RULES (VIOLATION = FAILURE):
+1. QUESTIONS MUST BE STANDALONE. They must make sense to someone who has never seen the source text but knows the subject.
+2. NEVER reference the text/passage/author in the question or answer.
+   - ❌ BAD: "According to the text, what is..."
+   - ❌ BAD: "The author argues that..."
+   - ❌ BAD: "As mentioned in the passage..."
+   - ✅ GOOD: "What is..."
+   - ✅ GOOD: "Which factor contributes to..."
+   - ✅ GOOD: "True or False: X causes Y."
+3. Test CONCEPTS and KNOWLEDGE, not reading comprehension.
+   - ❌ BAD: "What does the second paragraph say about X?"
+   - ✅ GOOD: "How does X affect Y?"
 
 ${difficultyGuide}
 ${mathGuide}
 
-Requirements:
-1. Test conceptual understanding, not memorization of document structure
-2. Questions should be educational and meaningful
-3. Each question should cover a DIFFERENT concept from the content
-
 ${formatGuide}
 
-REMEMBER: 
-1. Respond with ONLY the JSON array. No other text.
-2. NO references to the source text in question stems. Check every question before outputting.`;
+RESPONSE FORMAT:
+Respond with ONLY the valid JSON array. No other text.`;
 };
 
 /**
