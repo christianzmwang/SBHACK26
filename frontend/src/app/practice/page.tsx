@@ -21,6 +21,9 @@ import {
 // View modes for the practice page
 type ViewMode = 'overview' | 'generate' | 'quiz' | 'flashcards' | 'folder';
 
+// Practice mode for viewing a set
+type PracticeMode = 'multiple_choice' | 'true_false' | 'flashcards';
+
 // Flattened item for selection
 interface SelectableItem {
   id: string;
@@ -31,6 +34,7 @@ interface SelectableItem {
   path: string[];
   folderId?: string;
   sectionId?: string;
+  parentFolderId?: string;
 }
 
 export default function PracticePage() {
@@ -49,13 +53,15 @@ export default function PracticePage() {
   const [error, setError] = useState<string | null>(null);
   
   // Selection state for generation
-  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  // selectedFolders: when a folder is selected, ALL its contents are included
+  // selectedMaterials: individual materials selected (only when parent folder is NOT selected)
+  const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
+  const [selectedMaterials, setSelectedMaterials] = useState<Set<string>>(new Set());
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   
-  // Quiz generation state
+  // Practice set generation state
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generationType, setGenerationType] = useState<'quiz' | 'flashcards'>('quiz');
-  const [questionCount, setQuestionCount] = useState(10);
+  const [setSize, setSetSize] = useState<string>('20');
   const [practiceNameInput, setPracticeNameInput] = useState('');
   const [saveToPracticeFolder, setSaveToPracticeFolder] = useState<string | null>(null);
 
@@ -68,6 +74,9 @@ export default function PracticePage() {
   const [activeFlashcardSetId, setActiveFlashcardSetId] = useState<string | null>(null);
   const [activeQuiz, setActiveQuiz] = useState<(SavedQuiz & { questions: Question[] }) | null>(null);
   const [activeFlashcardSet, setActiveFlashcardSet] = useState<(SavedFlashcardSet & { cards: Flashcard[] }) | null>(null);
+
+  // Practice mode state - for choosing how to practice a set
+  const [practiceMode, setPracticeMode] = useState<PracticeMode>('multiple_choice');
 
   // Active folder for folder detail view
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
@@ -142,6 +151,21 @@ export default function PracticePage() {
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, []);
 
+  // Auto-expand all folders when entering generate view
+  useEffect(() => {
+    if (viewMode === 'generate' && materialFolders.length > 0) {
+      const allFolderIds = new Set<string>();
+      const collectFolderIds = (folders: Folder[]) => {
+        folders.forEach(folder => {
+          allFolderIds.add(folder.id);
+          collectFolderIds(folder.subfolders);
+        });
+      };
+      collectFolderIds(materialFolders);
+      setExpandedFolders(allFolderIds);
+    }
+  }, [viewMode, materialFolders]);
+
 
   const loadData = async () => {
     if (!userId) return;
@@ -162,7 +186,7 @@ export default function PracticePage() {
   };
 
   // Load specific quiz or flashcard set
-  const loadQuiz = async (quizId: string) => {
+  const loadQuiz = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
     try {
       setIsLoading(true);
       const quiz = await practiceApi.getQuiz(quizId);
@@ -178,15 +202,40 @@ export default function PracticePage() {
       };
       setActiveQuiz(mappedQuiz);
       setActiveQuizId(quizId);
+      setPracticeMode(mode);
       setCurrentQuestionIndex(0);
       setSelectedAnswers({});
       setShowResults(false);
       setQuizStartTime(Date.now());
-      setPreviousView(viewMode); // Track where we came from
-      setViewMode('quiz');
+      setPreviousView(viewMode);
+      
+      // Set view mode based on practice mode
+      if (mode === 'flashcards') {
+        // Convert quiz questions to flashcard format
+        const flashcardSet: SavedFlashcardSet & { cards: Flashcard[] } = {
+          id: quiz.id,
+          name: quiz.name,
+          total_cards: quiz.total_questions,
+          created_at: quiz.created_at,
+          mastery_count: 0,
+          cards: (quiz.questions || []).map((q: Question) => ({
+            id: q.id,
+            front: q.question,
+            back: q.explanation || (q.options && q.correct_answer ? `Answer: ${q.correct_answer} - ${q.options[q.correct_answer as keyof typeof q.options]}` : q.correct_answer) || 'No answer provided',
+            topic: q.topic,
+          })),
+        };
+        setActiveFlashcardSet(flashcardSet);
+        setActiveFlashcardSetId(quizId);
+        setCurrentCardIndex(0);
+        setIsFlipped(false);
+        setViewMode('flashcards');
+      } else {
+        setViewMode('quiz');
+      }
     } catch (err) {
       console.error('Failed to load quiz:', err);
-      setError('Failed to load quiz');
+      setError('Failed to load practice set');
     } finally {
       setIsLoading(false);
     }
@@ -219,11 +268,40 @@ export default function PracticePage() {
     }
   };
 
+  // Build mapping of folder IDs to their children (sections and subfolders)
+  const folderChildrenMap = useMemo(() => {
+    const map = new Map<string, { sectionIds: string[], subfolderIds: string[] }>();
+    
+    const processFolder = (folder: Folder) => {
+      const sectionIds = folder.sections.map(s => s.id);
+      const subfolderIds = folder.subfolders.map(sf => sf.id);
+      
+      // Also collect all nested section IDs
+      const collectAllSectionIds = (f: Folder): string[] => {
+        let ids = f.sections.map(s => s.id);
+        f.subfolders.forEach(sf => {
+          ids = [...ids, ...collectAllSectionIds(sf)];
+        });
+        return ids;
+      };
+      
+      map.set(folder.id, { 
+        sectionIds: collectAllSectionIds(folder), 
+        subfolderIds 
+      });
+      
+      folder.subfolders.forEach(sf => processFolder(sf));
+    };
+    
+    materialFolders.forEach(folder => processFolder(folder));
+    return map;
+  }, [materialFolders]);
+
   // Flatten folders and materials into selectable items
   const flattenedItems = useMemo(() => {
     const items: SelectableItem[] = [];
 
-    const processFolder = (folder: Folder, path: string[] = []) => {
+    const processFolder = (folder: Folder, path: string[] = [], parentFolderId?: string) => {
       const currentPath = [...path, folder.name];
       
       const countFiles = (f: Folder): number => {
@@ -239,6 +317,7 @@ export default function PracticePage() {
         fileCount: countFiles(folder),
         path: path,
         folderId: folder.id,
+        parentFolderId,
       });
 
       folder.sections.forEach(section => {
@@ -250,11 +329,12 @@ export default function PracticePage() {
           fileCount: section.files.length,
           path: currentPath,
           sectionId: section.id,
+          parentFolderId: folder.id,
         });
       });
 
       folder.subfolders.forEach(subfolder => {
-        processFolder(subfolder, currentPath);
+        processFolder(subfolder, currentPath, folder.id);
       });
     };
 
@@ -267,25 +347,130 @@ export default function PracticePage() {
     [flattenedItems]
   );
 
+  // Check if any ancestor folder is selected
+  const isAncestorFolderSelected = (parentFolderId: string | undefined): boolean => {
+    if (!parentFolderId) return false;
+    
+    let currentParentId: string | undefined = parentFolderId;
+    while (currentParentId) {
+      if (selectedFolders.has(currentParentId)) return true;
+      const parentItem = flattenedItems.find(i => i.folderId === currentParentId);
+      currentParentId = parentItem?.parentFolderId;
+    }
+    return false;
+  };
+
+  // Check if a folder is selected (directly or via ancestor)
+  const isFolderSelected = (folderId: string): boolean => {
+    if (selectedFolders.has(folderId)) return true;
+    
+    // Check if any ancestor is selected
+    const folderItem = flattenedItems.find(i => i.folderId === folderId);
+    if (folderItem?.parentFolderId) {
+      return isAncestorFolderSelected(folderItem.parentFolderId);
+    }
+    return false;
+  };
+
+  // Check if a material is selected (via folder or individually)
+  const isMaterialSelected = (sectionId: string, parentFolderId: string): boolean => {
+    // Check if parent folder (or any ancestor) is selected
+    if (selectedFolders.has(parentFolderId) || isAncestorFolderSelected(parentFolderId)) {
+      return true;
+    }
+    // Check if individually selected
+    return selectedMaterials.has(sectionId);
+  };
+
+  // Check if material selection is disabled (parent folder is selected)
+  const isMaterialSelectionDisabled = (parentFolderId: string): boolean => {
+    return selectedFolders.has(parentFolderId) || isAncestorFolderSelected(parentFolderId);
+  };
+
   const selectedFileCount = useMemo(() => {
     let count = 0;
-    selectedItems.forEach(itemId => {
-      const item = flattenedItems.find(i => i.id === itemId);
-      if (item) {
-        count += item.fileCount;
+    // Count from selected folders
+    selectedFolders.forEach(folderId => {
+      const folderItem = flattenedItems.find(i => i.folderId === folderId);
+      if (folderItem) {
+        count += folderItem.fileCount;
+      }
+    });
+    // Count from individually selected materials (that aren't already in a selected folder)
+    selectedMaterials.forEach(sectionId => {
+      const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
+      // If material is found and its parent folder is not selected, count its files
+      if (materialItem) {
+        if (!materialItem.parentFolderId || !isMaterialSelectionDisabled(materialItem.parentFolderId)) {
+          count += materialItem.fileCount;
+        }
+      } else {
+        // Material not found in flattenedItems but is selected - count as 1 file minimum
+        count += 1;
       }
     });
     return count;
-  }, [selectedItems, flattenedItems]);
+  }, [selectedFolders, selectedMaterials, flattenedItems]);
 
-  // Toggle functions
-  const toggleSelection = (itemId: string) => {
-    setSelectedItems(prev => {
-      const next = new Set(prev);
-      if (next.has(itemId)) {
-        next.delete(itemId);
+  // Count total selected items (folders + individual materials)
+  const totalSelectedCount = useMemo(() => {
+    let count = selectedFolders.size;
+    // Count materials that aren't already in a selected folder
+    selectedMaterials.forEach(sectionId => {
+      const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
+      // If material is found, check if parent folder is already selected
+      if (materialItem) {
+        if (!materialItem.parentFolderId || !isMaterialSelectionDisabled(materialItem.parentFolderId)) {
+          count++;
+        }
       } else {
-        next.add(itemId);
+        // Material not found in flattenedItems but is selected - still count it
+        count++;
+      }
+    });
+    return count;
+  }, [selectedFolders, selectedMaterials, flattenedItems]);
+
+  // Toggle folder selection
+  const toggleFolderSelection = (folderId: string) => {
+    setSelectedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        // Remove any child folders that are selected (parent takes precedence)
+        const removeChildSelections = (parentId: string) => {
+          const children = folderChildrenMap.get(parentId);
+          if (children) {
+            children.subfolderIds.forEach(childId => {
+              next.delete(childId);
+              removeChildSelections(childId);
+            });
+            // Also remove any individually selected materials from this folder
+            children.sectionIds.forEach(sectionId => {
+              setSelectedMaterials(prevMats => {
+                const nextMats = new Set(prevMats);
+                nextMats.delete(sectionId);
+                return nextMats;
+              });
+            });
+          }
+        };
+        removeChildSelections(folderId);
+        next.add(folderId);
+      }
+      return next;
+    });
+  };
+
+  // Toggle individual material selection
+  const toggleMaterialSelection = (sectionId: string) => {
+    setSelectedMaterials(prev => {
+      const next = new Set(prev);
+      if (next.has(sectionId)) {
+        next.delete(sectionId);
+      } else {
+        next.add(sectionId);
       }
       return next;
     });
@@ -304,11 +489,15 @@ export default function PracticePage() {
   };
 
   const selectAll = () => {
-    setSelectedItems(new Set(materialItems.map(m => m.id)));
+    // Select all top-level folders (this includes everything)
+    setSelectedFolders(new Set(materialFolders.map(f => f.id)));
+    // Clear individual material selections (they're now covered by folders)
+    setSelectedMaterials(new Set());
   };
 
   const clearSelection = () => {
-    setSelectedItems(new Set());
+    setSelectedFolders(new Set());
+    setSelectedMaterials(new Set());
   };
 
   // Helper to find folder by ID
@@ -327,9 +516,9 @@ export default function PracticePage() {
     folder.subfolders.forEach(sf => collectSectionIds(sf, sectionIds));
   };
 
-  // Handle quiz generation
+  // Handle practice set generation
   const handleGenerate = async () => {
-    if (selectedItems.size === 0) {
+    if (totalSelectedCount === 0) {
       setError('Please select at least one folder or material');
       return;
     }
@@ -339,67 +528,79 @@ export default function PracticePage() {
       return;
     }
 
+    const parsedSetSize = parseInt(setSize) || 20;
+    if (parsedSetSize < 5 || parsedSetSize > 200) {
+      setError('Set size must be between 5 and 200');
+      return;
+    }
+
     setIsGenerating(true);
     setError(null);
 
     try {
       const sectionIds: string[] = [];
-      selectedItems.forEach(itemId => {
-        const item = flattenedItems.find(i => i.id === itemId);
-        if (item?.sectionId) {
-          sectionIds.push(item.sectionId);
-        } else if (item?.type === 'folder' && item.folderId) {
-          const folder = findFolderById(materialFolders, item.folderId);
-          if (folder) {
-            collectSectionIds(folder, sectionIds);
-          }
+      
+      // Collect from selected folders
+      selectedFolders.forEach(folderId => {
+        const folder = findFolderById(materialFolders, folderId);
+        if (folder) {
+          collectSectionIds(folder, sectionIds);
+        }
+      });
+      
+      console.log('[Generate] Selected folders:', Array.from(selectedFolders));
+      console.log('[Generate] Selected materials:', Array.from(selectedMaterials));
+      console.log('[Generate] Section IDs from folders:', [...sectionIds]);
+      
+      // Collect from individually selected materials (that aren't already in a selected folder)
+      selectedMaterials.forEach(sectionId => {
+        const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
+        console.log('[Generate] Checking material:', sectionId, 'found item:', materialItem ? 'yes' : 'no', 'parentFolderId:', materialItem?.parentFolderId);
+        
+        // If parent folder is selected, material is already included via folder
+        if (materialItem?.parentFolderId && isMaterialSelectionDisabled(materialItem.parentFolderId)) {
+          console.log('[Generate] Skipping material (parent folder selected):', sectionId);
+          return;
+        }
+        
+        // Add if not already included
+        if (!sectionIds.includes(sectionId)) {
+          sectionIds.push(sectionId);
+          console.log('[Generate] Added material section ID:', sectionId);
         }
       });
 
+      console.log('[Generate] Final section IDs to send:', sectionIds);
+
       if (sectionIds.length === 0) {
-        setError('No materials found in the selected items');
+        setError('No materials found in the selected items. Make sure selected folders contain files with processed content.');
         return;
       }
 
-      if (generationType === 'quiz') {
-        const quiz = await practiceApi.generateQuiz({
-          sectionIds,
-          userId,
-          questionCount,
-          questionType: 'multiple_choice',
-          difficulty: 'mixed',
-          name: practiceNameInput || undefined,
-          folderId: saveToPracticeFolder || undefined,
-        });
-        setGeneratedQuiz(quiz);
-        setGeneratedFlashcards(null);
-        setCurrentQuestionIndex(0);
-        setSelectedAnswers({});
-        setShowResults(false);
-        setQuizStartTime(Date.now());
-        setViewMode('quiz');
-        // Refresh overview to show new quiz
-        loadData();
-      } else {
-        const flashcards = await practiceApi.generateFlashcards({
-          sectionIds,
-          userId,
-          count: questionCount,
-          name: practiceNameInput || undefined,
-          folderId: saveToPracticeFolder || undefined,
-        });
-        setGeneratedFlashcards(flashcards);
-        setGeneratedQuiz(null);
-        setCurrentCardIndex(0);
-        setIsFlipped(false);
-        setViewMode('flashcards');
-        // Refresh overview to show new flashcard set
-        loadData();
-      }
+      // Generate as quiz (can be practiced in any mode)
+      const quiz = await practiceApi.generateQuiz({
+        sectionIds,
+        userId,
+        questionCount: parsedSetSize,
+        questionType: 'multiple_choice',
+        difficulty: 'mixed',
+        name: practiceNameInput || undefined,
+        folderId: saveToPracticeFolder || undefined,
+      });
+      setGeneratedQuiz(quiz);
+      setGeneratedFlashcards(null);
+      setCurrentQuestionIndex(0);
+      setSelectedAnswers({});
+      setShowResults(false);
+      setQuizStartTime(Date.now());
+      setPracticeMode('multiple_choice');
+      setViewMode('quiz');
+      // Refresh overview to show new practice set
+      loadData();
       
     } catch (err) {
       console.error('Failed to generate:', err);
-      setError(err instanceof Error ? err.message : 'Failed to generate practice content');
+      setError(err instanceof Error ? err.message : 'Failed to generate practice set');
     } finally {
       setIsGenerating(false);
     }
@@ -429,24 +630,24 @@ export default function PracticePage() {
 
   // Delete quiz or flashcard set
   const handleDeleteQuiz = async (quizId: string) => {
-    if (!confirm('Are you sure you want to delete this quiz?')) return;
+    if (!confirm('Are you sure you want to delete this practice set?')) return;
     try {
       await practiceApi.deleteQuiz(quizId);
       loadData();
     } catch (err) {
-      console.error('Failed to delete quiz:', err);
-      setError('Failed to delete quiz');
+      console.error('Failed to delete practice set:', err);
+      setError('Failed to delete practice set');
     }
   };
 
   const handleDeleteFlashcardSet = async (setId: string) => {
-    if (!confirm('Are you sure you want to delete this flashcard set?')) return;
+    if (!confirm('Are you sure you want to delete this practice set?')) return;
     try {
       await practiceApi.deleteFlashcardSet(setId);
       loadData();
     } catch (err) {
-      console.error('Failed to delete flashcard set:', err);
-      setError('Failed to delete flashcard set');
+      console.error('Failed to delete practice set:', err);
+      setError('Failed to delete practice set');
     }
   };
 
@@ -599,8 +800,9 @@ export default function PracticePage() {
 
   // Render folder tree item for generation
   const renderFolderTree = (folder: Folder, depth = 0) => {
-    const itemId = `folder-${folder.id}`;
-    const isSelected = selectedItems.has(itemId);
+    const isSelected = isFolderSelected(folder.id);
+    const isDirectlySelected = selectedFolders.has(folder.id);
+    const isSelectedViaParent = isSelected && !isDirectlySelected;
     const isExpanded = expandedFolders.has(folder.id);
     const hasContent = folder.sections.length > 0 || folder.subfolders.length > 0;
 
@@ -614,9 +816,11 @@ export default function PracticePage() {
     return (
       <div key={folder.id}>
         <div
-          className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition ${
-            isSelected ? 'bg-indigo-900/30 border-l-2 border-indigo-500' : 'hover:bg-slate-800/50'
-          }`}
+          className={`flex items-center gap-3 px-3 py-2 transition ${
+            isSelected 
+              ? 'bg-indigo-900/30 border-l-2 border-indigo-500' 
+              : 'hover:bg-slate-800/50'
+          } ${isSelectedViaParent ? 'opacity-60' : ''}`}
           style={{ paddingLeft: `${depth * 20 + 12}px` }}
         >
           <button
@@ -640,12 +844,13 @@ export default function PracticePage() {
           </button>
 
           <button
-            onClick={() => toggleSelection(itemId)}
+            onClick={() => !isSelectedViaParent && toggleFolderSelection(folder.id)}
+            disabled={isSelectedViaParent}
             className={`w-5 h-5 border rounded flex items-center justify-center transition ${
               isSelected
                 ? 'bg-indigo-600 border-indigo-600'
                 : 'border-slate-600 hover:border-slate-400'
-            }`}
+            } ${isSelectedViaParent ? 'cursor-not-allowed' : 'cursor-pointer'}`}
           >
             {isSelected && (
               <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-white" viewBox="0 0 20 20" fill="currentColor">
@@ -658,17 +863,23 @@ export default function PracticePage() {
             <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z" />
           </svg>
 
-          <div className="flex-1 min-w-0" onClick={() => toggleSelection(itemId)}>
+          <div 
+            className={`flex-1 min-w-0 ${isSelectedViaParent ? '' : 'cursor-pointer'}`}
+            onClick={() => !isSelectedViaParent && toggleFolderSelection(folder.id)}
+          >
             <span className="text-white font-medium">{folder.name}</span>
             <span className="text-slate-500 text-sm ml-2">
               {fileCount} file{fileCount !== 1 ? 's' : ''}
             </span>
+            {isSelectedViaParent && (
+              <span className="text-indigo-400 text-xs ml-2">(included in parent)</span>
+            )}
           </div>
         </div>
 
         {isExpanded && (
           <div>
-            {folder.sections.map(section => renderMaterialItem(section, depth + 1))}
+            {folder.sections.map(section => renderMaterialItem(section, depth + 1, folder.id))}
             {folder.subfolders.map(subfolder => renderFolderTree(subfolder, depth + 1))}
           </div>
         )}
@@ -677,48 +888,66 @@ export default function PracticePage() {
   };
 
   // Render material item for generation
-  const renderMaterialItem = (section: MaterialSection, depth: number) => {
-    const itemId = `material-${section.id}`;
-    const isSelected = selectedItems.has(itemId);
+  // - If parent folder is selected: shows as selected, can't be toggled individually
+  // - If parent folder is NOT selected: can be individually selected
+  const renderMaterialItem = (section: MaterialSection, depth: number, parentFolderId: string) => {
+    const isParentSelected = isMaterialSelectionDisabled(parentFolderId);
+    const isSelected = isMaterialSelected(section.id, parentFolderId);
+    const isIndividuallySelected = selectedMaterials.has(section.id) && !isParentSelected;
+
+    const handleMaterialClick = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!isParentSelected) {
+        toggleMaterialSelection(section.id);
+      }
+    };
 
     return (
       <div
         key={section.id}
-        className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition ${
-          isSelected ? 'bg-indigo-900/30 border-l-2 border-indigo-500' : 'hover:bg-slate-800/50'
-        }`}
+        className={`flex items-center gap-3 px-3 py-2 transition ${
+          isSelected 
+            ? isParentSelected 
+              ? 'bg-indigo-900/20 border-l-2 border-indigo-500/50 opacity-60' 
+              : 'bg-indigo-900/30 border-l-2 border-indigo-500'
+            : 'hover:bg-slate-800/50'
+        } ${isParentSelected ? 'cursor-not-allowed' : 'cursor-pointer'}`}
         style={{ paddingLeft: `${depth * 20 + 12}px` }}
-        onClick={() => toggleSelection(itemId)}
+        onClick={handleMaterialClick}
       >
         <div className="w-5" />
 
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleSelection(itemId);
-          }}
-          className={`w-5 h-5 border rounded flex items-center justify-center transition ${
+          type="button"
+          onClick={handleMaterialClick}
+          disabled={isParentSelected}
+          className={`w-5 h-5 border rounded flex items-center justify-center transition flex-shrink-0 ${
             isSelected
-              ? 'bg-indigo-600 border-indigo-600'
-              : 'border-slate-600 hover:border-slate-400'
+              ? isParentSelected
+                ? 'bg-indigo-600/50 border-indigo-600/50 cursor-not-allowed'
+                : 'bg-indigo-600 border-indigo-600 cursor-pointer'
+              : 'border-slate-600 hover:border-slate-400 cursor-pointer'
           }`}
         >
           {isSelected && (
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-white" viewBox="0 0 20 20" fill="currentColor">
+            <svg xmlns="http://www.w3.org/2000/svg" className={`h-3 w-3 ${isParentSelected ? 'text-white/70' : 'text-white'}`} viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
             </svg>
           )}
         </button>
 
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 flex-shrink-0 ${isSelected ? 'text-slate-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
 
         <div className="flex-1 min-w-0">
-          <span className="text-slate-300">{section.title}</span>
-          <span className="text-slate-500 text-sm ml-2">
+          <span className={isSelected ? 'text-slate-300' : 'text-slate-400'}>{section.title}</span>
+          <span className="text-slate-600 text-sm ml-2">
             {section.files.length} file{section.files.length !== 1 ? 's' : ''}
           </span>
+          {isParentSelected && isSelected && (
+            <span className="text-indigo-400 text-xs ml-2">(included in folder)</span>
+          )}
         </div>
       </div>
     );
@@ -781,8 +1010,19 @@ export default function PracticePage() {
   // =====================
   if (viewMode === 'quiz' && (generatedQuiz || activeQuiz)) {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
-    const quizName = generatedQuiz?.name || activeQuiz?.name || 'Quiz';
-    const currentQuestion = questions[currentQuestionIndex];
+    const quizName = generatedQuiz?.name || activeQuiz?.name || 'Practice Set';
+    
+    // For True/False mode, convert questions
+    const displayQuestions = practiceMode === 'true_false' 
+      ? questions.map(q => ({
+          ...q,
+          options: { A: 'True', B: 'False' } as Record<string, string>,
+          // Map original answer to True/False
+          correct_answer: q.correct_answer === 'A' ? 'A' : 'B'
+        }))
+      : questions;
+    
+    const currentQuestion = displayQuestions[currentQuestionIndex];
     const score = calculateScore();
 
     if (showResults) {
@@ -808,7 +1048,7 @@ export default function PracticePage() {
           <div className="max-w-3xl mx-auto">
             <div className="mb-8 text-center">
               <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
-                Quiz Complete
+                {practiceMode === 'multiple_choice' ? 'Multiple Choice' : 'True/False'} Complete
               </p>
               <h1 className="mt-1 text-2xl font-semibold text-white">
                 {quizName}
@@ -892,7 +1132,7 @@ export default function PracticePage() {
           <div className="mb-6 flex items-center justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
-                Question {currentQuestionIndex + 1} of {questions.length}
+                {practiceMode === 'multiple_choice' ? 'Multiple Choice' : 'True/False'} • Question {currentQuestionIndex + 1} of {questions.length}
               </p>
               <h1 className="mt-1 text-xl font-semibold text-white">
                 {quizName}
@@ -984,7 +1224,7 @@ export default function PracticePage() {
                 onClick={handleSubmitQuiz}
                 className="px-4 py-2 bg-green-600 text-white font-semibold hover:bg-green-500 transition cursor-pointer"
               >
-                Submit Quiz
+                Submit
               </button>
             )}
           </div>
@@ -998,7 +1238,7 @@ export default function PracticePage() {
   // =====================
   if (viewMode === 'flashcards' && (generatedFlashcards || activeFlashcardSet)) {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
-    const setName = generatedFlashcards?.name || activeFlashcardSet?.name || 'Flashcards';
+    const setName = generatedFlashcards?.name || activeFlashcardSet?.name || 'Practice Set';
     const currentCard = cards[currentCardIndex];
 
     if (!currentCard) {
@@ -1043,7 +1283,7 @@ export default function PracticePage() {
           <div className="mb-6 flex items-center justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
-                Card {currentCardIndex + 1} of {cards.length}
+                Flashcards • Card {currentCardIndex + 1} of {cards.length}
               </p>
               <h1 className="mt-1 text-xl font-semibold text-white">
                 {setName}
@@ -1133,11 +1373,14 @@ export default function PracticePage() {
         <div className="mb-6 flex items-center justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
-              Generate New Practice
+              Create Practice Set
             </p>
             <h1 className="mt-1 text-2xl font-semibold text-white">
-              Create quizzes and flashcards from your materials
+              Generate questions from your materials
             </h1>
+            <p className="mt-1 text-slate-400 text-sm">
+              Practice sets can be used as Multiple Choice, True/False, or Flashcards
+            </p>
           </div>
           <button
             onClick={() => setViewMode(previousView === 'folder' ? 'folder' : 'overview')}
@@ -1150,12 +1393,12 @@ export default function PracticePage() {
           </button>
         </div>
 
-        <div className="flex gap-6 h-[calc(100%-100px)]">
+        <div className="flex gap-6 h-[calc(100%-120px)]">
           {/* Left: Material selection */}
           <div className="flex-1 flex flex-col border border-slate-800 bg-black overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/50">
               <div className="text-sm text-slate-400">
-                <span className="text-white font-medium">{selectedItems.size}</span> item{selectedItems.size !== 1 ? 's' : ''} selected
+                <span className="text-white font-medium">{totalSelectedCount}</span> item{totalSelectedCount !== 1 ? 's' : ''} selected
                 {selectedFileCount > 0 && (
                   <span className="ml-2">
                     (<span className="text-white">{selectedFileCount}</span> file{selectedFileCount !== 1 ? 's' : ''})
@@ -1202,7 +1445,7 @@ export default function PracticePage() {
           <div className="w-80 flex flex-col gap-4">
             {/* Name input */}
             <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">Name (Optional)</h3>
+              <h3 className="text-sm font-semibold text-white mb-3">Set Name (Optional)</h3>
               <input
                 type="text"
                 value={practiceNameInput}
@@ -1212,53 +1455,21 @@ export default function PracticePage() {
               />
             </div>
 
-            {/* Generation type */}
+            {/* Set size input */}
             <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">Generation Type</h3>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setGenerationType('quiz')}
-                  className={`flex-1 py-2 px-3 text-sm font-medium transition cursor-pointer ${
-                    generationType === 'quiz'
-                      ? 'bg-white text-black'
-                      : 'border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'
-                  }`}
-                >
-                  Quiz
-                </button>
-                <button
-                  onClick={() => setGenerationType('flashcards')}
-                  className={`flex-1 py-2 px-3 text-sm font-medium transition cursor-pointer ${
-                    generationType === 'flashcards'
-                      ? 'bg-white text-black'
-                      : 'border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'
-                  }`}
-                >
-                  Flashcards
-                </button>
+              <h3 className="text-sm font-semibold text-white mb-3">Set Size</h3>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  value={setSize}
+                  onChange={(e) => setSetSize(e.target.value)}
+                  min="5"
+                  max="200"
+                  className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
+                />
+                <span className="text-slate-400 text-sm">questions</span>
               </div>
-            </div>
-
-            {/* Question count */}
-            <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">
-                {generationType === 'quiz' ? 'Number of Questions' : 'Number of Cards'}
-              </h3>
-              <div className="flex gap-2">
-                {[5, 10, 20, 30].map(count => (
-                  <button
-                    key={count}
-                    onClick={() => setQuestionCount(count)}
-                    className={`flex-1 py-2 text-sm font-medium transition cursor-pointer ${
-                      questionCount === count
-                        ? 'bg-indigo-600 text-white'
-                        : 'border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'
-                    }`}
-                  >
-                    {count}
-                  </button>
-                ))}
-              </div>
+              <p className="text-slate-500 text-xs mt-2">Min: 5, Max: 200</p>
             </div>
 
             {/* Save to folder */}
@@ -1276,10 +1487,30 @@ export default function PracticePage() {
               </select>
             </div>
 
+            {/* Practice modes info */}
+            <div className="border border-slate-800 bg-black p-4">
+              <h3 className="text-sm font-semibold text-white mb-3">Practice Modes</h3>
+              <div className="space-y-2 text-sm text-slate-400">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
+                  <span>Multiple Choice</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-green-400 rounded-full"></span>
+                  <span>True/False</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-purple-400 rounded-full"></span>
+                  <span>Flashcards</span>
+                </div>
+              </div>
+              <p className="text-slate-500 text-xs mt-3">Choose your mode when practicing</p>
+            </div>
+
             {/* Generate button */}
             <button
               onClick={handleGenerate}
-              disabled={isGenerating || selectedItems.size === 0}
+              disabled={isGenerating || totalSelectedCount === 0}
               className="w-full bg-white py-3 text-black font-semibold transition hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2"
             >
               {isGenerating ? (
@@ -1292,7 +1523,7 @@ export default function PracticePage() {
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  Generate {generationType === 'quiz' ? 'Quiz' : 'Flashcards'}
+                  Create Practice Set
                 </>
               )}
             </button>
@@ -1378,8 +1609,8 @@ export default function PracticePage() {
           </button>
         </div>
 
-        {/* Action Buttons */}
-        <div className="mb-6 flex gap-4">
+        {/* Generate Button */}
+        <div className="mb-6">
           <button
             onClick={() => handleGenerateFromFolder(folder.id)}
             className="bg-white px-6 py-3 text-black font-semibold hover:bg-slate-200 transition cursor-pointer flex items-center gap-2"
@@ -1387,140 +1618,139 @@ export default function PracticePage() {
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
-            Generate Quiz or Flashcards
-          </button>
-          <button
-            onClick={() => {
-              const params = new URLSearchParams();
-              params.set("folderId", folder.id);
-              params.set("folderName", folder.name);
-              window.location.href = `/stats?${params.toString()}`;
-            }}
-            className="border border-white px-6 py-3 text-white font-semibold hover:bg-white hover:text-black transition cursor-pointer flex items-center gap-2"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-            </svg>
-            View Stats & Generate Plan
+            Create Practice Set
           </button>
         </div>
 
-        {/* Quizzes Section */}
+        {/* Practice Sets Section */}
         <div className="mb-8">
           <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
             </svg>
-            Quizzes ({folderQuizzes.length})
+            Practice Sets ({folderQuizzes.length + folderFlashcards.length})
           </h2>
 
-          {folderQuizzes.length === 0 ? (
+          {folderQuizzes.length === 0 && folderFlashcards.length === 0 ? (
             <div className="border border-dashed border-slate-700 bg-black p-8 text-center">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-slate-600 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
               </svg>
-              <p className="text-slate-400 mb-2">No quizzes yet</p>
-              <p className="text-slate-500 text-sm">Generate a quiz from your course materials.</p>
+              <p className="text-slate-400 mb-2">No practice sets yet</p>
+              <p className="text-slate-500 text-sm">Create a practice set from your course materials.</p>
             </div>
           ) : (
             <div className="space-y-3">
               {folderQuizzes.map(quiz => (
                 <div 
                   key={quiz.id} 
-                  className="group flex items-center gap-4 border border-slate-800 bg-black p-4 hover:border-slate-600 hover:bg-slate-900/50 transition cursor-pointer"
-                  onClick={() => loadQuiz(quiz.id)}
+                  className="group border border-slate-800 bg-black p-4 hover:border-slate-600 hover:bg-slate-900/50 transition"
                 >
-                  <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                    </svg>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-white font-medium">{quiz.name}</h3>
-                    <p className="text-slate-500 text-sm">
-                      {quiz.total_questions} questions • {formatDate(quiz.created_at)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    {quiz.best_score !== undefined && quiz.best_score !== null && (
-                      <div className="text-right">
-                        <span className="text-white font-semibold">{quiz.best_score}%</span>
-                        <p className="text-slate-500 text-xs">Best score</p>
-                      </div>
-                    )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteQuiz(quiz.id);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition cursor-pointer p-2"
-                      title="Delete quiz"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  <div className="flex items-center gap-4 mb-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                       </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-white font-medium">{quiz.name}</h3>
+                      <p className="text-slate-500 text-sm">
+                        {quiz.total_questions} questions • {formatDate(quiz.created_at)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      {quiz.best_score !== undefined && quiz.best_score !== null && (
+                        <div className="text-right">
+                          <span className="text-white font-semibold">{quiz.best_score}%</span>
+                          <p className="text-slate-500 text-xs">Best score</p>
+                        </div>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteQuiz(quiz.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition cursor-pointer p-2"
+                        title="Delete practice set"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  {/* Practice mode buttons */}
+                  <div className="flex gap-2 ml-14">
+                    <button
+                      onClick={() => loadQuiz(quiz.id, 'multiple_choice')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-blue-500/50 text-blue-400 hover:bg-blue-500/20 transition cursor-pointer"
+                    >
+                      <span className="w-1.5 h-1.5 bg-blue-400 rounded-full"></span>
+                      Multiple Choice
+                    </button>
+                    <button
+                      onClick={() => loadQuiz(quiz.id, 'true_false')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-green-500/50 text-green-400 hover:bg-green-500/20 transition cursor-pointer"
+                    >
+                      <span className="w-1.5 h-1.5 bg-green-400 rounded-full"></span>
+                      True/False
+                    </button>
+                    <button
+                      onClick={() => loadQuiz(quiz.id, 'flashcards')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-purple-500/50 text-purple-400 hover:bg-purple-500/20 transition cursor-pointer"
+                    >
+                      <span className="w-1.5 h-1.5 bg-purple-400 rounded-full"></span>
+                      Flashcards
                     </button>
                   </div>
                 </div>
               ))}
-            </div>
-          )}
-        </div>
-
-        {/* Flashcards Section */}
-        <div className="mb-8">
-          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-            Flashcards ({folderFlashcards.length})
-          </h2>
-
-          {folderFlashcards.length === 0 ? (
-            <div className="border border-dashed border-slate-700 bg-black p-8 text-center">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-slate-600 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-              </svg>
-              <p className="text-slate-400 mb-2">No flashcards yet</p>
-              <p className="text-slate-500 text-sm">Generate flashcards from your course materials.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
               {folderFlashcards.map(set => (
                 <div 
                   key={set.id} 
-                  className="group flex items-center gap-4 border border-slate-800 bg-black p-4 hover:border-slate-600 hover:bg-slate-900/50 transition cursor-pointer"
-                  onClick={() => loadFlashcardSet(set.id)}
+                  className="group border border-slate-800 bg-black p-4 hover:border-slate-600 hover:bg-slate-900/50 transition"
                 >
-                  <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                    </svg>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-white font-medium">{set.name}</h3>
-                    <p className="text-slate-500 text-sm">
-                      {set.total_cards} cards • {formatDate(set.created_at)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    {set.mastery_count > 0 && (
-                      <div className="text-right">
-                        <span className="text-white font-semibold">{set.mastery_count}/{set.total_cards}</span>
-                        <p className="text-slate-500 text-xs">Mastered</p>
-                      </div>
-                    )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteFlashcardSet(set.id);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition cursor-pointer p-2"
-                      title="Delete flashcard set"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  <div className="flex items-center gap-4 mb-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                       </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-white font-medium">{set.name}</h3>
+                      <p className="text-slate-500 text-sm">
+                        {set.total_cards} cards • {formatDate(set.created_at)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      {set.mastery_count > 0 && (
+                        <div className="text-right">
+                          <span className="text-white font-semibold">{Math.round((set.mastery_count / set.total_cards) * 100)}%</span>
+                          <p className="text-slate-500 text-xs">Mastery</p>
+                        </div>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteFlashcardSet(set.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition cursor-pointer p-2"
+                        title="Delete flashcard set"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  {/* Practice mode buttons */}
+                  <div className="flex gap-2 ml-14">
+                    <button
+                      onClick={() => loadFlashcardSet(set.id)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-purple-500/50 text-purple-400 hover:bg-purple-500/20 transition cursor-pointer"
+                    >
+                      <span className="w-1.5 h-1.5 bg-purple-400 rounded-full"></span>
+                      Study Flashcards
                     </button>
                   </div>
                 </div>
@@ -1587,8 +1817,7 @@ export default function PracticePage() {
             // Calculate folder stats from quizzes and flashcards
             const folderQuizzes = practiceOverview.quizzes.filter(q => q.folder_id === folder.id);
             const folderFlashcards = practiceOverview.flashcardSets.filter(f => f.folder_id === folder.id);
-            const quizCount = folderQuizzes.length;
-            const flashcardCount = folderFlashcards.length;
+            const setCount = folderQuizzes.length + folderFlashcards.length;
             
             // Calculate average quiz score for progress
             const quizzesWithScores = folderQuizzes.filter(q => q.best_score !== undefined && q.best_score !== null);
@@ -1629,26 +1858,15 @@ export default function PracticePage() {
 
                 {/* Right: Stats */}
                 <div className="flex items-center gap-6 flex-shrink-0">
-                  {/* Quiz count */}
-                  <div className="text-center min-w-[80px]">
+                  {/* Practice sets count */}
+                  <div className="text-center min-w-[100px]">
                     <div className="flex items-center justify-center gap-1.5">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                       </svg>
-                      <span className="text-white font-semibold">{quizCount}</span>
+                      <span className="text-white font-semibold">{setCount}</span>
                     </div>
-                    <p className="text-slate-500 text-xs mt-0.5">Quizzes</p>
-                  </div>
-
-                  {/* Flashcard count */}
-                  <div className="text-center min-w-[80px]">
-                    <div className="flex items-center justify-center gap-1.5">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                      </svg>
-                      <span className="text-white font-semibold">{flashcardCount}</span>
-                    </div>
-                    <p className="text-slate-500 text-xs mt-0.5">Flashcards</p>
+                    <p className="text-slate-500 text-xs mt-0.5">Practice Sets</p>
                   </div>
 
                   {/* Progress */}
@@ -1811,6 +2029,122 @@ export default function PracticePage() {
           )}
         </div>
       </div>
+
+      {/* Uncategorized Practice Sets (not in any folder) */}
+      {(() => {
+        const unfolderedQuizzes = practiceOverview?.quizzes.filter(q => !q.folder_id) || [];
+        const unfolderedFlashcards = practiceOverview?.flashcardSets.filter(f => !f.folder_id) || [];
+        
+        if (unfolderedQuizzes.length === 0 && unfolderedFlashcards.length === 0) {
+          return null;
+        }
+
+        return (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-white">Uncategorized Practice Sets</h2>
+              <span className="text-slate-500 text-sm">
+                {unfolderedQuizzes.length + unfolderedFlashcards.length} set{unfolderedQuizzes.length + unfolderedFlashcards.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* Quizzes */}
+              {unfolderedQuizzes.map(quiz => (
+                <div
+                  key={quiz.id}
+                  className="group border border-slate-800 bg-black p-4 transition hover:border-slate-600 hover:bg-slate-900/50 cursor-pointer"
+                  onClick={() => loadQuiz(quiz.id)}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 bg-blue-500/20 rounded flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                      </div>
+                      <span className="text-xs text-blue-400 font-medium uppercase">Quiz</span>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteQuiz(quiz.id);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition p-1"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                  <h3 className="text-white font-medium mb-1 line-clamp-1">{quiz.name}</h3>
+                  <p className="text-slate-500 text-sm mb-3">
+                    {quiz.total_questions} question{quiz.total_questions !== 1 ? 's' : ''}
+                  </p>
+                  {quiz.best_score !== undefined && quiz.best_score !== null && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-blue-500 transition-all"
+                          style={{ width: `${quiz.best_score}%` }}
+                        />
+                      </div>
+                      <span className="text-slate-400 text-xs">{quiz.best_score}%</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Flashcard Sets */}
+              {unfolderedFlashcards.map(set => (
+                <div
+                  key={set.id}
+                  className="group border border-slate-800 bg-black p-4 transition hover:border-slate-600 hover:bg-slate-900/50 cursor-pointer"
+                  onClick={() => loadFlashcardSet(set.id)}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 bg-purple-500/20 rounded flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                      </div>
+                      <span className="text-xs text-purple-400 font-medium uppercase">Flashcards</span>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteFlashcardSet(set.id);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition p-1"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                  <h3 className="text-white font-medium mb-1 line-clamp-1">{set.name}</h3>
+                  <p className="text-slate-500 text-sm mb-3">
+                    {set.total_cards} card{set.total_cards !== 1 ? 's' : ''}
+                  </p>
+                  {set.mastery_count > 0 && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-purple-500 transition-all"
+                          style={{ width: `${Math.round((set.mastery_count / set.total_cards) * 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-slate-400 text-xs">{set.mastery_count}/{set.total_cards}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
 
     </div>
   );
