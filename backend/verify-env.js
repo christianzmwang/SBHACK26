@@ -11,12 +11,15 @@ dotenv.config();
 const REQUIRED_VARS = [
   'DATABASE_URL',
   'OPENAI_API_KEY',
+  'OPENROUTER_API_KEY',
   'FRONTEND_URL',
 ];
 
 const OPTIONAL_VARS = [
   'NODE_ENV',
   'PORT',
+  'OPENROUTER_BASE_URL',
+  'VOYAGE_API_KEY',
 ];
 
 console.log('\n[INFO] Checking Environment Variables...\n');
@@ -82,6 +85,21 @@ if (process.env.OPENAI_API_KEY) {
     console.log('  [ERROR] Invalid OPENAI_API_KEY format (should start with sk-)');
     hasErrors = true;
   }
+}
+
+// Validate OPENROUTER_API_KEY
+if (process.env.OPENROUTER_API_KEY) {
+  console.log('\n[INFO] OpenRouter Configuration:');
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  
+  if (apiKey.startsWith('sk-or-')) {
+    console.log('  [OK] Valid OpenRouter API key format');
+  } else {
+    console.log('  [WARN] Unusual OpenRouter API key format (expected sk-or- prefix)');
+  }
+} else {
+  console.log('\n[ERROR] OPENROUTER_API_KEY is required for quiz/flashcard generation');
+  hasErrors = true;
 }
 
 // Validate FRONTEND_URL
