@@ -13,14 +13,14 @@ export const getPool = () => {
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : { rejectUnauthorized: false },
       max: 10, // Reduced from 20 to avoid hitting connection limits
-      min: 2, // Keep minimum connections alive
-      idleTimeoutMillis: 600000, // Increased to 10 minutes to prevent frequent cold starts
+      min: 0, // Set to 0 to avoid holding idle connections that might be killed by the pooler
+      idleTimeoutMillis: 5000, // Reduced to 5s to close idle connections quickly
       connectionTimeoutMillis: 30000, // Increased to 30s for slower connections
       statement_timeout: 60000, // Increased for long running queries
       query_timeout: 60000, // Increased for long running queries
       keepAlive: true, // Enable keep-alive to prevent connection drops
       keepAliveInitialDelayMillis: 10000,
-      allowExitOnIdle: false, // Keep pool alive
+      allowExitOnIdle: true, // Allow process to exit if pool is idle
     };
 
     pool = new Pool(dbConfig);
