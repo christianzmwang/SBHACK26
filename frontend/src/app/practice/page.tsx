@@ -1513,16 +1513,58 @@ export default function PracticePage() {
 
             // Validate the answer is valid (A, B, C, D)
             if (['A', 'B', 'C', 'D'].includes(answer)) {
+              // Record the answer
               handleSelectAnswer(questionId, answer);
 
-              // Flag for auto-advance after answer is recorded
-              // The effect will trigger once selectedAnswers updates
-              shouldAutoAdvanceRef.current = true;
-
-              // Optional: Announce the selection
+              // Announce the selection and then auto-advance
               if (voiceAgentRef.current && isVoiceAgentOpen) {
                 const optionText = currentQuestion.options?.[answer as keyof typeof currentQuestion.options] || answer;
-                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`);
+                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`).then(() => {
+                  // After speaking, use setTimeout to ensure state has updated
+                  setTimeout(() => {
+                    // Now find next unanswered with the updated state
+                    const updatedAnswers = { ...selectedAnswers, [questionId]: answer };
+                    let nextUnanswered = -1;
+
+                    // Search from next question onwards
+                    for (let i = currentQuestionIndex + 1; i < questions.length; i++) {
+                      const q = questions[i];
+                      const qId = q.id ? String(q.id) : `q-${i}`;
+                      const ans = updatedAnswers[qId];
+                      if (!ans || ans === '') {
+                        nextUnanswered = i;
+                        break;
+                      }
+                    }
+
+                    // If not found, wrap around from beginning
+                    if (nextUnanswered === -1) {
+                      for (let i = 0; i < currentQuestionIndex; i++) {
+                        const q = questions[i];
+                        const qId = q.id ? String(q.id) : `q-${i}`;
+                        const ans = updatedAnswers[qId];
+                        if (!ans || ans === '') {
+                          nextUnanswered = i;
+                          break;
+                        }
+                      }
+                    }
+
+                    if (nextUnanswered === -1) {
+                      // All answered - submit
+                      voiceAgentRef.current?.speakText("All questions answered. Submitting your quiz.").then(() => {
+                        handleSubmitQuiz();
+                      });
+                    } else {
+                      // Move to next and flag for read
+                      shouldAutoReadQuestionRef.current = true;
+                      setCurrentQuestionIndex(nextUnanswered);
+                    }
+                  }, 100);
+                });
+              } else {
+                // No voice - just set the flag for auto-advance
+                shouldAutoAdvanceRef.current = true;
               }
             }
           }
