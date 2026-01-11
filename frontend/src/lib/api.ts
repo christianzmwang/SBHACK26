@@ -757,6 +757,16 @@ export const foldersApi = {
     return data.section;
   },
 
+  async uploadTranscript(sectionId: string, transcript: string, title?: string): Promise<{ file: FileItem }> {
+    const response = await fetch(`${API_BASE}/sections/${sectionId}/transcript`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript, title }),
+    });
+    const data = await handleResponse<{ file: FileItem }>(response);
+    return { file: data.file };
+  },
+
   async getContentStructure(sectionId: string): Promise<ContentStructure> {
     const response = await fetch(`${API_BASE}/materials/section/${sectionId}/structure`);
     const data = await handleResponse<{ success: boolean; structure: ContentStructure }>(response);

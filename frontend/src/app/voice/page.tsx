@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useSession } from "next-auth/react";
+import { foldersApi, Folder, MaterialSection } from "@/lib/api";
+import { useData } from "@/app/context/DataContext";
 
 interface TranscriptWord {
   word: string;
@@ -26,12 +29,25 @@ interface DeepgramResponse {
 }
 
 export default function VoicePage() {
+  const { data: session } = useSession();
+  const { refreshFolders: refreshGlobalFolders } = useData();
   const [mode, setMode] = useState<"talk" | "record">("talk");
   const [isActive, setIsActive] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [audioLevels, setAudioLevels] = useState<number[]>(Array(48).fill(8));
+  
+  // Save modal state
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = useState<string>("");
+  const [selectedSectionId, setSelectedSectionId] = useState<string>("");
+  const [newSectionTitle, setNewSectionTitle] = useState("");
+  const [transcriptTitle, setTranscriptTitle] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -39,14 +55,96 @@ export default function VoicePage() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const idleAnimationRef = useRef<number | null>(null);
   const isAnalyzingRef = useRef(false);
+
+  // Idle animation for bars when not recording
+  useEffect(() => {
+    if (isActive) {
+      // Stop idle animation when recording starts
+      if (idleAnimationRef.current) {
+        cancelAnimationFrame(idleAnimationRef.current);
+        idleAnimationRef.current = null;
+      }
+      return;
+    }
+
+    // Run idle animation
+    let startTime: number | null = null;
+    
+    const animateIdle = (timestamp: number) => {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+      
+      const newLevels = Array.from({ length: 48 }, (_, i) => {
+        // Create wave-like motion from center
+        const centerIndex = 23.5;
+        const distanceFromCenter = Math.abs(i - centerIndex);
+        
+        // Multiple wave frequencies for organic movement
+        const wave1 = Math.sin((elapsed / 1000) * 1.5 + i * 0.15) * 12;
+        const wave2 = Math.sin((elapsed / 1000) * 2.3 + i * 0.1) * 8;
+        const wave3 = Math.sin((elapsed / 1000) * 0.7 + distanceFromCenter * 0.2) * 6;
+        
+        // Base height + combined waves
+        const level = 15 + wave1 + wave2 + wave3;
+        return Math.max(8, Math.min(40, level));
+      });
+      
+      setAudioLevels(newLevels);
+      idleAnimationRef.current = requestAnimationFrame(animateIdle);
+    };
+    
+    idleAnimationRef.current = requestAnimationFrame(animateIdle);
+    
+    return () => {
+      if (idleAnimationRef.current) {
+        cancelAnimationFrame(idleAnimationRef.current);
+        idleAnimationRef.current = null;
+      }
+    };
+  }, [isActive]);
 
   // Clean up on unmount
   useEffect(() => {
     return () => {
       stopRecording();
+      if (idleAnimationRef.current) {
+        cancelAnimationFrame(idleAnimationRef.current);
+      }
     };
   }, []);
+
+  // Load folders when save modal opens
+  useEffect(() => {
+    if (showSaveModal && session?.user?.id) {
+      // Reset section states when modal opens
+      setSelectedSectionId("");
+      setNewSectionTitle("");
+      setSaveError(null);
+      loadFolders();
+    }
+  }, [showSaveModal, session?.user?.id]);
+
+  const loadFolders = async () => {
+    if (!session?.user?.id) return;
+    try {
+      const folderList = await foldersApi.list(session.user.id);
+      setFolders(folderList);
+      if (folderList.length > 0) {
+        setSelectedFolderId(folderList[0].id);
+      }
+    } catch (err) {
+      console.error("Failed to load folders:", err);
+      setSaveError("Failed to load folders. Please try again.");
+    }
+  };
+
+  // Get sections for selected folder
+  const getSelectedFolderSections = (): MaterialSection[] => {
+    const folder = folders.find(f => f.id === selectedFolderId);
+    return folder?.sections || [];
+  };
 
   // Analyze audio levels for visualization
   const analyzeAudio = useCallback(() => {
@@ -190,7 +288,11 @@ export default function VoicePage() {
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = (skipModal = false) => {
+    // Check if we should show save modal (record mode with transcript content)
+    const hasTranscriptContent = transcript.trim().length > 0 || interimTranscript.trim().length > 0;
+    const shouldShowSaveModal = mode === "record" && hasTranscriptContent && !skipModal;
+
     // Stop animation frame
     isAnalyzingRef.current = false;
     if (animationFrameRef.current) {
@@ -227,6 +329,16 @@ export default function VoicePage() {
     // Reset audio levels
     setAudioLevels(Array(48).fill(8));
     setIsActive(false);
+
+    // Show save modal if conditions met
+    if (shouldShowSaveModal) {
+      // Use a small delay to ensure transcript state is updated
+      setTimeout(() => {
+        setShowSaveModal(true);
+        setSaveSuccess(false);
+        setSaveError(null);
+      }, 100);
+    }
   };
 
   const handleButtonClick = () => {
@@ -240,6 +352,86 @@ export default function VoicePage() {
   const clearTranscript = () => {
     setTranscript("");
     setInterimTranscript("");
+  };
+
+  const handleSaveTranscript = async () => {
+    if (!session?.user?.id) {
+      setSaveError("Please sign in to save transcripts");
+      return;
+    }
+
+    const fullTranscript = `${transcript}${interimTranscript ? " " + interimTranscript : ""}`.trim();
+    if (!fullTranscript) {
+      setSaveError("No transcript to save");
+      return;
+    }
+
+    if (!selectedFolderId) {
+      setSaveError("Please select a folder");
+      return;
+    }
+
+    // Check if user has either selected a section OR entered a new section name
+    const hasExistingSection = selectedSectionId && selectedSectionId.trim() !== "";
+    const hasNewSection = newSectionTitle && newSectionTitle.trim() !== "";
+    
+    if (!hasExistingSection && !hasNewSection) {
+      setSaveError("Please select a section or enter a new section name");
+      return;
+    }
+
+    setIsSaving(true);
+    setSaveError(null);
+
+    try {
+      let targetSectionId = selectedSectionId;
+
+      // Create new section if user entered a name
+      if (hasNewSection) {
+        const newSection = await foldersApi.createFolderSection(
+          selectedFolderId,
+          newSectionTitle.trim(),
+          "Voice recordings and transcripts",
+          "lecture_notes"
+        );
+        targetSectionId = newSection.id;
+      }
+
+      // Save the transcript
+      await foldersApi.uploadTranscript(
+        targetSectionId,
+        fullTranscript,
+        transcriptTitle.trim() || "Voice Recording"
+      );
+
+      // Refresh global folders cache so course material page shows the new content
+      refreshGlobalFolders();
+
+      setSaveSuccess(true);
+      
+      // Clear transcript and close modal after success
+      setTimeout(() => {
+        setTranscript("");
+        setInterimTranscript("");
+        setShowSaveModal(false);
+        setTranscriptTitle("");
+        setNewSectionTitle("");
+        setSaveSuccess(false);
+      }, 1500);
+    } catch (err) {
+      console.error("Failed to save transcript:", err);
+      setSaveError(err instanceof Error ? err.message : "Failed to save transcript");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const closeSaveModal = () => {
+    setShowSaveModal(false);
+    setTranscriptTitle("");
+    setNewSectionTitle("");
+    setSaveError(null);
+    setSaveSuccess(false);
   };
 
   // Color configurations for each mode - sci-fi aesthetic
@@ -302,17 +494,8 @@ export default function VoicePage() {
           <div className="relative flex h-full w-full items-center justify-center gap-[3px]">
             {/* Generate 48 bars for the voice line */}
             {Array.from({ length: 48 }).map((_, i) => {
-              // Use real audio levels when active, otherwise use default animation
-              const activeHeight = isActive ? audioLevels[i] : 8;
-
-              // Stagger the activation delay from center outward for a ripple effect
-              const centerIndex = 23.5;
-              const distanceFromCenter = Math.abs(i - centerIndex);
-              const activationDelay = distanceFromCenter * 0.015;
-
-              // Animation timing varies by position (only for idle state)
-              const animationDuration = !isActive ? 1.5 + (i % 5) * 0.3 : 0;
-              const animationDelay = !isActive ? i * 0.08 : 0;
+              // audioLevels is now animated via JS for both idle and active states
+              const height = audioLevels[i];
 
               return (
                 <div
@@ -323,13 +506,10 @@ export default function VoicePage() {
                     minHeight: "3px",
                     background: `linear-gradient(180deg, ${colors.primary}, ${colors.secondary}, ${colors.accent})`,
                     borderRadius: "3px",
-                    animation: !isActive
-                      ? `voiceBarIdle ${animationDuration}s ease-in-out ${animationDelay}s infinite alternate`
-                      : "none",
                     transition: isActive
-                      ? "height 0.05s ease-out"
-                      : `height 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) ${activationDelay}s`,
-                    height: `${activeHeight}%`,
+                      ? "height 0.08s ease-out, background 0.3s ease"
+                      : "height 0.1s ease-out, background 0.3s ease",
+                    height: `${height}%`,
                   }}
                 />
               );
@@ -368,11 +548,24 @@ export default function VoicePage() {
         <div className="relative flex items-center justify-between mb-3 z-10">
           <h3 className="text-sm font-medium text-slate-400 px-4">Transcript</h3>
           {(transcript || interimTranscript) && (
-            <button
-              onClick={clearTranscript}
-              className="text-xs px-10 text-slate-500 hover:text-white transition-colors cursor-pointer">
-              Clear
-            </button>
+            <div className="flex items-center gap-4 px-4">
+              {mode === "record" && (
+                <button
+                  onClick={() => {
+                    setShowSaveModal(true);
+                    setSaveSuccess(false);
+                    setSaveError(null);
+                  }}
+                  className="text-xs text-slate-500 hover:text-white transition-colors cursor-pointer">
+                  Save
+                </button>
+              )}
+              <button
+                onClick={clearTranscript}
+                className="text-xs text-slate-500 hover:text-white transition-colors cursor-pointer">
+                Clear
+              </button>
+            </div>
           )}
         </div>
         
@@ -412,23 +605,181 @@ export default function VoicePage() {
         </div>
       </div>
 
-      {/* CSS Keyframes */}
+      {/* Save Transcript Modal */}
+      {showSaveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={closeSaveModal}>
+          <div className="bg-black/30 backdrop-blur-md border border-white/10 max-w-3xl w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <h2 className="text-sm font-semibold text-white">Save Transcript</h2>
+              <button
+                onClick={closeSaveModal}
+                className="text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-4">
+              {saveSuccess ? (
+                <div className="text-center py-8">
+                  <div className="w-16 h-16 mx-auto mb-4 bg-green-500/20 flex items-center justify-center">
+                    <svg className="w-8 h-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <p className="text-green-400 font-medium">Saved & processed!</p>
+                  <p className="text-slate-400 text-sm mt-1">Ready for practice material generation</p>
+                </div>
+              ) : (
+                <>
+                  {/* Transcript Preview */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-slate-300 mb-2">
+                      Transcript Preview
+                    </label>
+                    <div className="bg-slate-800/50 border border-white/10 p-3 max-h-24 overflow-y-auto text-sm text-slate-300">
+                      {transcript}{interimTranscript && <span className="text-slate-500 italic"> {interimTranscript}</span>}
+                    </div>
+                  </div>
+
+                  {/* Horizontal Layout: Title, Folder, Section */}
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    {/* Title Input */}
+                    <div>
+                      <label className="block text-sm font-medium text-slate-300 mb-2">
+                        Title
+                      </label>
+                      <input
+                        type="text"
+                        value={transcriptTitle}
+                        onChange={(e) => setTranscriptTitle(e.target.value)}
+                        placeholder="Voice Recording"
+                        className="w-full bg-slate-800/50 border border-white/10 px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-white/30"
+                      />
+                    </div>
+
+                    {/* Folder Selection */}
+                    <div>
+                      <label className="block text-sm font-medium text-slate-300 mb-2">
+                        Folder
+                      </label>
+                      {folders.length === 0 ? (
+                        <p className="text-sm text-slate-500">No folders found.</p>
+                      ) : (
+                        <select
+                          value={selectedFolderId}
+                          onChange={(e) => {
+                            setSelectedFolderId(e.target.value);
+                            setSelectedSectionId("");
+                            setNewSectionTitle("");
+                          }}
+                          className="w-full bg-slate-800/50 border border-white/10 px-3 py-2 text-white focus:outline-none focus:border-white/30"
+                        >
+                          {folders.map((folder) => (
+                            <option key={folder.id} value={folder.id}>
+                              {folder.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    {/* Section Selection */}
+                    <div>
+                      <label className="block text-sm font-medium text-slate-300 mb-2">
+                        Section <span className="text-red-400">*</span>
+                      </label>
+                      {selectedFolderId ? (
+                        getSelectedFolderSections().length > 0 ? (
+                          <select
+                            value={newSectionTitle.trim() ? "" : selectedSectionId}
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                setSelectedSectionId(e.target.value);
+                                setNewSectionTitle("");
+                              } else {
+                                setSelectedSectionId("");
+                              }
+                            }}
+                            className="w-full bg-slate-800/50 border border-white/10 px-3 py-2 text-white focus:outline-none focus:border-white/30"
+                            disabled={!!newSectionTitle.trim()}
+                          >
+                            <option value="">Select a section...</option>
+                            {getSelectedFolderSections().map((section) => (
+                              <option key={section.id} value={section.id}>
+                                {section.title}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <p className="text-sm text-slate-400 py-2">No sections. Create one below.</p>
+                        )
+                      ) : (
+                        <p className="text-sm text-slate-500 py-2">Select a folder first</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Create New Section Row */}
+                  {selectedFolderId && (
+                    <div className="mb-4">
+                      <div className="flex items-center gap-4">
+                        {getSelectedFolderSections().length > 0 && (
+                          <span className="text-slate-500 text-sm whitespace-nowrap">or create new:</span>
+                        )}
+                        <input
+                          type="text"
+                          value={newSectionTitle}
+                          onChange={(e) => {
+                            setNewSectionTitle(e.target.value);
+                            // Clear existing section selection when typing new section name
+                            if (e.target.value.trim()) {
+                              setSelectedSectionId("");
+                            }
+                          }}
+                          placeholder="New section name..."
+                          className="flex-1 bg-slate-800/50 border border-white/10 px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-white/30"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Error Message */}
+                  {saveError && (
+                    <div className="bg-red-500/10 border border-red-500/30 p-3 mb-4">
+                      <p className="text-sm text-red-400">{saveError}</p>
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex gap-3 justify-end">
+                    <button
+                      onClick={closeSaveModal}
+                      className="px-6 py-2 border border-white/20 text-slate-300 hover:bg-white hover:border-white hover:text-black transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveTranscript}
+                      disabled={isSaving || !selectedFolderId || folders.length === 0 || (!selectedSectionId && !newSectionTitle.trim())}
+                      className="px-6 py-2 bg-white text-black font-semibold border border-white hover:bg-black hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      {isSaving ? "Processing..." : "Save"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CSS Styles */}
       <style jsx>{`
-        @keyframes voiceBarIdle {
-          0% {
-            transform: scaleY(1);
-            opacity: 0.4;
-          }
-          50% {
-            transform: scaleY(2.5);
-            opacity: 0.7;
-          }
-          100% {
-            transform: scaleY(1);
-            opacity: 0.4;
-          }
-        }
-        
         /* Hide scrollbar */
         div::-webkit-scrollbar {
           display: none;

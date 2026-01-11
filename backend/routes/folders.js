@@ -538,6 +538,92 @@ router.get('/files/:fileId/content', async (req, res) => {
 });
 
 /**
+ * Upload a voice transcript to a section
+ * POST /api/sections/:sectionId/transcript
+ */
+router.post('/sections/:sectionId/transcript', async (req, res) => {
+  try {
+    const { sectionId } = req.params;
+    const { transcript, title } = req.body;
+
+    if (!transcript || transcript.trim().length === 0) {
+      return res.status(400).json({ error: 'Transcript content is required' });
+    }
+
+    // Get section info
+    const sectionResult = await query('SELECT * FROM folder_sections WHERE id = $1', [sectionId]);
+    if (sectionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Section not found' });
+    }
+    const section = sectionResult.rows[0];
+
+    const fileName = `${title || 'Voice Recording'} (Transcript).txt`;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const uniqueFileName = `${title || 'Voice Recording'} - ${timestamp} (Transcript).txt`;
+
+    console.log(`[Transcript Upload] Processing transcript for section ${sectionId}: ${fileName}`);
+
+    // Process and store the transcript as a document
+    let materialId = null;
+    let fileWarning = null;
+
+    try {
+      // Create a mock file object for the processor
+      const mockFile = {
+        originalname: uniqueFileName,
+        buffer: Buffer.from(transcript, 'utf-8'),
+        mimetype: 'text/plain',
+        size: Buffer.byteLength(transcript, 'utf-8'),
+        path: null,
+      };
+
+      const processResults = await processAndStoreDocuments([mockFile], {
+        type: section.type || 'lecture_notes',
+        title: title || 'Voice Recording',
+        textContent: transcript,
+      });
+
+      if (processResults[0]?.success && processResults[0]?.materialId) {
+        materialId = processResults[0].materialId;
+      }
+      if (processResults[0]?.warning) {
+        fileWarning = processResults[0].warning;
+      }
+    } catch (e) {
+      console.error('[Transcript Upload] Failed to process transcript:', e.message);
+    }
+
+    // Store file reference
+    const fileResult = await query(
+      `INSERT INTO section_files (section_id, material_id, name, size, text_content)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [sectionId, materialId, uniqueFileName, formatFileSize(Buffer.byteLength(transcript, 'utf-8')), null]
+    );
+
+    const result = {
+      id: fileResult.rows[0].id,
+      name: fileResult.rows[0].name,
+      size: fileResult.rows[0].size,
+      uploadDate: fileResult.rows[0].upload_date,
+      materialId: fileResult.rows[0].material_id,
+      warning: fileWarning
+    };
+
+    console.log(`[Transcript Upload] Successfully saved transcript: ${uniqueFileName}`);
+
+    res.status(201).json({
+      success: true,
+      file: result,
+      warning: fileWarning
+    });
+  } catch (error) {
+    console.error('[Transcript Upload] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Delete a file
  * DELETE /api/files/:fileId
  */

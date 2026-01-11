@@ -591,12 +591,12 @@ function PreviewContent() {
                 {section.files.map((file) => (
                   <div
                     key={file.id}
-                    className={`relative group transition ${
+                    className={`relative group transition border-l-2 ${
                       file.processing 
-                        ? 'opacity-60 bg-slate-800 text-slate-400'
+                        ? 'opacity-60 text-slate-400 border-l-transparent'
                         : selectedFile?.id === file.id
-                        ? 'bg-indigo-600 text-white'
-                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                        ? 'text-white border-l-indigo-500'
+                        : 'text-slate-300 hover:text-white border-l-transparent hover:border-l-slate-600'
                     }`}
                   >
                     <button
@@ -612,18 +612,18 @@ function PreviewContent() {
                         </svg>
                         <div className="min-w-0 flex-1">
                           <p className="text-sm font-medium truncate">{file.name}</p>
-                          <div className={`text-xs flex items-center gap-2 ${selectedFile?.id === file.id ? 'text-indigo-200' : 'text-slate-500'}`}>
+                          <div className="text-xs flex items-center gap-2 text-slate-500">
                             <span>{file.size || 'Unknown size'}</span>
                             <span>-</span>
                             {file.processing ? (
-                              <span className={`flex items-center gap-1 ${selectedFile?.id === file.id ? 'text-yellow-300' : 'text-yellow-500'}`}>
+                              <span className="flex items-center gap-1 text-yellow-500">
                                 <div className="animate-spin h-3 w-3 border-2 border-yellow-500 border-t-transparent rounded-full" />
                                 Processing
                               </span>
                             ) : file.materialId ? (
-                              <span className={`${selectedFile?.id === file.id ? 'text-green-300' : 'text-green-500'}`}>Processed</span>
+                              <span className="text-green-500">Processed</span>
                             ) : (
-                              <span className={`${selectedFile?.id === file.id ? 'text-amber-300' : 'text-amber-500'}`}>Not processed</span>
+                              <span className="text-amber-500">Not processed</span>
                             )}
                           </div>
                         </div>
@@ -636,11 +636,7 @@ function PreviewContent() {
                         e.stopPropagation();
                         handleDeleteFile(file.id);
                       }}
-                      className={`absolute right-3 top-1/2 -translate-y-1/2 p-1.5 transition opacity-0 group-hover:opacity-100 cursor-pointer ${
-                        selectedFile?.id === file.id
-                          ? 'text-white hover:text-red-300'
-                          : 'text-slate-400 hover:text-red-400'
-                      }`}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 transition opacity-0 group-hover:opacity-100 cursor-pointer text-slate-400 hover:text-red-400"
                       title="Delete file"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -656,13 +652,13 @@ function PreviewContent() {
           {/* Upload More Files */}
           <div className="p-4 border-t border-slate-700">
             {/* Upload Mode Switcher */}
-            <div className="flex bg-slate-800 p-1 mb-4">
+            <div className="flex border border-slate-700 mb-4">
               <button
                 onClick={() => setUploadMode('text')}
                 className={`flex-1 py-1.5 text-xs font-medium transition cursor-pointer ${
                   uploadMode === 'text' 
-                    ? 'bg-slate-600 text-white shadow-sm' 
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'text-white border-b-2 border-b-white' 
+                    : 'text-slate-400 hover:text-slate-200 border-b-2 border-b-transparent'
                 }`}
               >
                 Text
@@ -671,8 +667,8 @@ function PreviewContent() {
                 onClick={() => setUploadMode('file')}
                 className={`flex-1 py-1.5 text-xs font-medium transition cursor-pointer ${
                   uploadMode === 'file' 
-                    ? 'bg-slate-600 text-white shadow-sm' 
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'text-white border-b-2 border-b-white' 
+                    : 'text-slate-400 hover:text-slate-200 border-b-2 border-b-transparent'
                 }`}
               >
                 File
@@ -681,8 +677,8 @@ function PreviewContent() {
                 onClick={() => setUploadMode('youtube')}
                 className={`flex-1 py-1.5 text-xs font-medium transition cursor-pointer ${
                   uploadMode === 'youtube' 
-                    ? 'bg-red-900/40 text-red-200 shadow-sm' 
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'text-red-400 border-b-2 border-b-red-400' 
+                    : 'text-slate-400 hover:text-slate-200 border-b-2 border-b-transparent'
                 }`}
               >
                 YouTube
@@ -704,7 +700,7 @@ function PreviewContent() {
                   value={pastedText}
                   onChange={(e) => setPastedText(e.target.value)}
                   placeholder="Paste text content here..."
-                  className="w-full h-24 bg-slate-800 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none resize-none mb-2"
+                  className="w-full h-24 bg-black border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none resize-none mb-2"
                 />
                 <button
                   onClick={handlePasteUpload}
@@ -738,7 +734,7 @@ function PreviewContent() {
                   className={`mb-3 border-2 border-dashed px-4 py-6 text-center transition ${
                     isDragging 
                       ? 'border-indigo-500 bg-indigo-900/20' 
-                      : 'border-slate-600 bg-slate-800/50 hover:border-slate-500'
+                      : 'border-slate-600 hover:border-slate-500'
                   }`}
                 >
                   <svg 
@@ -796,7 +792,7 @@ function PreviewContent() {
                       }}
                       placeholder="https://youtube.com/watch?v=..."
                       disabled={isUploadingYouTube}
-                      className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full px-3 py-2 bg-black border border-slate-600 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
                   </div>
                 </div>
