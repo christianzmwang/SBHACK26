@@ -21,6 +21,7 @@ import {
   type SectionStructure,
   type MaterialStructure,
   type MaterialChapter,
+  type TopicAnalysis,
 } from "@/lib/api";
 
 // View modes for the practice page
@@ -144,6 +145,10 @@ export default function PracticePage() {
   const [newFolderDescription, setNewFolderDescription] = useState('');
   const [newFolderColor, setNewFolderColor] = useState('#6366f1');
 
+  // Topic analysis state
+  const [topicAnalysis, setTopicAnalysis] = useState<TopicAnalysis | null>(null);
+  const [isLoadingTopicAnalysis, setIsLoadingTopicAnalysis] = useState(false);
+
   const userId = session?.user?.id;
 
   // Keep refs in sync with state
@@ -197,6 +202,37 @@ export default function PracticePage() {
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, []);
+
+  // Load topic analysis when user ID is available
+  useEffect(() => {
+    const loadTopicAnalysis = async () => {
+      if (!userId) return;
+      
+      setIsLoadingTopicAnalysis(true);
+      try {
+        const analysis = await practiceApi.getTopicAnalysis(userId);
+        setTopicAnalysis(analysis);
+      } catch (err) {
+        console.error('Failed to load topic analysis:', err);
+        // Don't show error to user - this is supplementary data
+      } finally {
+        setIsLoadingTopicAnalysis(false);
+      }
+    };
+
+    loadTopicAnalysis();
+  }, [userId]);
+
+  // Refresh topic analysis after quiz submission
+  const refreshTopicAnalysis = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const analysis = await practiceApi.getTopicAnalysis(userId);
+      setTopicAnalysis(analysis);
+    } catch (err) {
+      console.error('Failed to refresh topic analysis:', err);
+    }
+  }, [userId]);
 
   // Auto-expand all folders when entering generate view
   useEffect(() => {
@@ -366,11 +402,12 @@ export default function PracticePage() {
       });
       setShowResults(true);
       refreshPracticeOverview(); // Refresh to get updated stats
+      refreshTopicAnalysis(); // Refresh topic analysis with new performance data
     } catch (err) {
       console.error('Failed to submit quiz:', err);
       setShowResults(true); // Still show results even if save failed
     }
-  }, [generatedQuiz?.quizId, activeQuizId, userId, quizStartTime, selectedAnswers, refreshPracticeOverview]);
+  }, [generatedQuiz?.quizId, activeQuizId, userId, quizStartTime, selectedAnswers, refreshPracticeOverview, refreshTopicAnalysis]);
 
   // Auto-advance to next question after answer is recorded (for hands-free mode)
   useEffect(() => {
@@ -3714,6 +3751,108 @@ export default function PracticePage() {
           Your Practice Library
         </h1>
       </div>
+
+      {/* Focus Areas - Topics that need more practice */}
+      {topicAnalysis && topicAnalysis.focusAreas.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 flex items-center justify-center bg-orange-600/20 border border-orange-600/50 rounded-full">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-white">Focus Areas</h2>
+                <p className="text-slate-400 text-sm">Topics where you need more practice based on your quiz performance</p>
+              </div>
+            </div>
+            {topicAnalysis.summary.overallAccuracy !== null && (
+              <div className="text-right">
+                <div className="text-2xl font-bold text-white">{topicAnalysis.summary.overallAccuracy}%</div>
+                <div className="text-xs text-slate-400">Overall Accuracy</div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {topicAnalysis.focusAreas.map((topic, index) => {
+              // Color based on accuracy
+              const getAccuracyColor = (acc: number) => {
+                if (acc < 40) return { bg: 'bg-red-900/30', border: 'border-red-600/50', text: 'text-red-400', bar: 'bg-red-500' };
+                if (acc < 60) return { bg: 'bg-orange-900/30', border: 'border-orange-600/50', text: 'text-orange-400', bar: 'bg-orange-500' };
+                return { bg: 'bg-yellow-900/30', border: 'border-yellow-600/50', text: 'text-yellow-400', bar: 'bg-yellow-500' };
+              };
+              const colors = getAccuracyColor(topic.accuracy);
+
+              return (
+                <div 
+                  key={`${topic.topic}-${index}`}
+                  className={`${colors.bg} ${colors.border} border p-4 transition hover:border-opacity-80`}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-white font-medium text-sm truncate" title={topic.topic}>
+                        {topic.topic}
+                      </h3>
+                      {topic.chapter && (
+                        <p className="text-slate-500 text-xs mt-0.5">Chapter {topic.chapter}</p>
+                      )}
+                    </div>
+                    <div className={`${colors.text} text-xl font-bold ml-3`}>
+                      {topic.accuracy}%
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="h-1.5 bg-slate-800/50 rounded-full overflow-hidden mb-2">
+                    <div 
+                      className={`h-full ${colors.bar} transition-all`}
+                      style={{ width: `${topic.accuracy}%` }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">
+                      {topic.correctCount}/{topic.totalAttempts} correct
+                    </span>
+                    {topic.lastPracticed && (
+                      <span className="text-slate-500">
+                        Last: {new Date(topic.lastPracticed).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Summary stats */}
+          <div className="mt-4 flex items-center gap-6 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 bg-orange-500 rounded-full"></span>
+              <span className="text-slate-400">{topicAnalysis.summary.weakTopicsCount} topics need work</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+              <span className="text-slate-400">{topicAnalysis.summary.strongTopicsCount} topics mastered</span>
+            </div>
+            <div className="text-slate-500">
+              {topicAnalysis.summary.totalTopics} topics tracked
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Show loading state for topic analysis */}
+      {isLoadingTopicAnalysis && !topicAnalysis && (
+        <div className="mb-8 p-6 border border-slate-800 bg-slate-900/30">
+          <div className="flex items-center gap-3">
+            <div className="animate-spin h-5 w-5 border-2 border-indigo-500 border-t-transparent rounded-full" />
+            <span className="text-slate-400">Analyzing your practice performance...</span>
+          </div>
+        </div>
+      )}
 
       {/* Practice Folders */}
       <div className="mb-8">
