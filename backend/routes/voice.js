@@ -107,7 +107,7 @@ Important matching rules:
 - For quiz generation, if a folder is mentioned, include ALL section IDs from that folder
 - If user says a number for question count (e.g., "50 questions", "100", "generate 160"), extract it
 - For answers, map common phrases: "first option" → "A", "second" → "B", "third" → "C", "fourth" → "D", "true" → "A", "false" → "B", "option 1" → "A", "option 2" → "B", "option 3" → "C", "option 4" → "D"
-- If context shows we're in a quiz, single letters or option references are likely answers
+- CRITICAL: If context shows we're in a quiz and user says a single letter (A, B, C, D) even with punctuation like "A.", "B,", "c,", "D." → ANSWER_QUESTION with that letter. High confidence (0.95+).
 - "show answer", "reveal", "flip", "what's the answer", "flip card" → FLIP_CARD (in flashcard context)
 - "next", "continue", "next card" → NEXT_QUESTION or NEXT_CARD based on context
 - "previous card", "go back", "last card" → PREV_CARD (in flashcard context)
@@ -117,7 +117,8 @@ Important matching rules:
 - "done", "finish", "submit", "I'm done" → SUBMIT_QUIZ
 - "exit", "quit", "stop", "leave" → EXIT_PRACTICE
 - "repeat", "repeat question", "say that again", "what was the question", "read question" → REPEAT_QUESTION (in quiz context)
-- "read the answers", "what are the options", "read options", "repeat answers" → REPEAT_ANSWERS (in quiz context)`;
+- "read the answers", "what are the options", "read options", "repeat answers" → REPEAT_ANSWERS (in quiz context)
+- For ANSWER_QUESTION actions, leave conversationalResponse empty or null (the frontend handles the response)
 
   try {
     const response = await chatCompletion([
@@ -203,16 +204,24 @@ router.post('/chat', async (req, res) => {
 
     // If we detected a high-confidence action, send it first
     if (intent.action !== 'NONE' && intent.confidence >= 0.7) {
-      res.write(`data: ${JSON.stringify({ 
-        action: intent.action, 
+      res.write(`data: ${JSON.stringify({
+        action: intent.action,
         params: intent.params,
-        confidence: intent.confidence 
+        confidence: intent.confidence
       })}\n\n`);
 
       // For action commands, use the conversational response if available
       if (intent.conversationalResponse) {
         res.write(`data: ${JSON.stringify({ text: intent.conversationalResponse })}\n\n`);
         res.write(`data: ${JSON.stringify({ done: true, fullText: intent.conversationalResponse })}\n\n`);
+        res.end();
+        return;
+      }
+
+      // For certain actions, don't generate LLM response (frontend handles it)
+      const silentActions = ['ANSWER_QUESTION', 'NEXT_QUESTION', 'PREV_QUESTION', 'NEXT_CARD', 'PREV_CARD', 'FLIP_CARD'];
+      if (silentActions.includes(intent.action)) {
+        res.write(`data: ${JSON.stringify({ done: true, fullText: '' })}\n\n`);
         res.end();
         return;
       }
