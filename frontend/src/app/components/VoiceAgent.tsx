@@ -44,6 +44,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
   const audioQueueRef = useRef<ArrayBuffer[]>([]);
   const isPlayingRef = useRef(false);
   const captionsEndRef = useRef<HTMLDivElement>(null);
+  const accumulatedTranscriptRef = useRef<string>('');
 
   // Auto-scroll captions
   useEffect(() => {
@@ -64,13 +65,23 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
       wsRef.current = null;
     }
     if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        // Ignore errors on cleanup
+      }
       mediaRecorderRef.current = null;
     }
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      try {
+        audioContextRef.current.close();
+      } catch (e) {
+        // Ignore errors on cleanup
+      }
       audioContextRef.current = null;
     }
+    accumulatedTranscriptRef.current = '';
+    setCurrentTranscript('');
     setIsConnected(false);
     setIsListening(false);
     setIsSpeaking(false);
@@ -115,8 +126,9 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
 
       const token = await getDeepgramToken();
       
-      // Connect to Deepgram Flux (v2/listen)
-      const wsUrl = `wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000&eager_eot_threshold=0.5&eot_threshold=1.0`;
+      // Connect to Deepgram v1/listen with browser-compatible settings
+      // Using nova-2 model with interim results and utterance detection
+      const wsUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&language=en&punctuate=true&interim_results=true&utterance_end_ms=1000&vad_events=true`;
       
       const ws = new WebSocket(wsUrl, ['token', token]);
       wsRef.current = ws;
@@ -132,13 +144,17 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         try {
           const data = JSON.parse(event.data);
           
-          if (data.type === 'Connected') {
-            console.log('Deepgram session connected:', data.request_id);
-          } else if (data.type === 'TurnInfo') {
-            handleTurnInfo(data);
+          // Handle v1/listen response format
+          if (data.type === 'Results') {
+            handleTranscriptResult(data);
+          } else if (data.type === 'UtteranceEnd') {
+            // User finished speaking - process the accumulated transcript
+            handleUtteranceEnd();
+          } else if (data.type === 'SpeechStarted') {
+            setIsListening(true);
           } else if (data.type === 'Error') {
             console.error('Deepgram error:', data);
-            setError(data.description || 'Voice service error');
+            setError(data.description || data.message || 'Voice service error');
           }
         } catch (err) {
           console.error('Error parsing message:', err);
@@ -151,8 +167,8 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
         setIsConnected(false);
       };
 
-      ws.onclose = () => {
-        console.log('Deepgram WebSocket closed');
+      ws.onclose = (event) => {
+        console.log('Deepgram WebSocket closed:', event.code, event.reason);
         setIsConnected(false);
         setIsListening(false);
       };
@@ -163,36 +179,46 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     }
   };
 
-  // Handle turn info from Deepgram Flux
-  const handleTurnInfo = async (data: any) => {
-    const { event, transcript, end_of_turn_confidence } = data;
+  // Handle transcript results from Deepgram v1/listen
+  const handleTranscriptResult = (data: any) => {
+    const transcript = data.channel?.alternatives?.[0]?.transcript;
+    const isFinal = data.is_final;
+    const speechFinal = data.speech_final;
 
-    // Update live transcript
-    if (transcript && transcript.trim()) {
-      setCurrentTranscript(transcript);
+    if (transcript) {
+      if (isFinal) {
+        // Final transcript for this segment - accumulate it
+        accumulatedTranscriptRef.current += (accumulatedTranscriptRef.current ? ' ' : '') + transcript;
+        setCurrentTranscript(accumulatedTranscriptRef.current);
+        setIsListening(true);
+        
+        // If speech_final is true, the speaker has paused - process the utterance
+        if (speechFinal && accumulatedTranscriptRef.current.trim()) {
+          const fullTranscript = accumulatedTranscriptRef.current.trim();
+          accumulatedTranscriptRef.current = '';
+          setCurrentTranscript('');
+          setIsListening(false);
+          processUserSpeech(fullTranscript);
+        }
+      } else {
+        // Interim result - show it but don't save
+        const interimDisplay = accumulatedTranscriptRef.current 
+          ? accumulatedTranscriptRef.current + ' ' + transcript 
+          : transcript;
+        setCurrentTranscript(interimDisplay);
+        setIsListening(true);
+      }
     }
+  };
 
-    // Handle events
-    if (event === 'StartOfTurn') {
-      setIsListening(true);
+  // Handle utterance end event
+  const handleUtteranceEnd = () => {
+    if (accumulatedTranscriptRef.current.trim()) {
+      const fullTranscript = accumulatedTranscriptRef.current.trim();
+      accumulatedTranscriptRef.current = '';
       setCurrentTranscript('');
-    } else if (event === 'EagerEndOfTurn') {
-      // User likely finished speaking with moderate confidence
-      console.log('Eager end of turn detected, confidence:', end_of_turn_confidence);
-      if (transcript && transcript.trim()) {
-        await processUserSpeech(transcript);
-      }
-    } else if (event === 'TurnResumed') {
-      // User continued speaking after eager end
-      console.log('Turn resumed');
-      setIsListening(true);
-    } else if (event === 'EndOfTurn') {
-      // User definitely finished speaking
       setIsListening(false);
-      if (transcript && transcript.trim()) {
-        await processUserSpeech(transcript);
-      }
-      setCurrentTranscript('');
+      processUserSpeech(fullTranscript);
     }
   };
 

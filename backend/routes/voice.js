@@ -5,41 +5,29 @@ const router = express.Router();
 
 /**
  * POST /api/voice/token
- * Generate a temporary Deepgram token for client-side use
+ * Provide Deepgram API key for client-side WebSocket connection
+ * 
+ * Note: This returns the API key directly. For production with untrusted clients,
+ * consider using Deepgram's scoped keys or proxy the WebSocket through your server.
  */
 router.post('/token', async (req, res) => {
   try {
     const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
     
     if (!deepgramApiKey) {
+      console.error('DEEPGRAM_API_KEY is not set in environment variables');
       return res.status(500).json({ error: 'Deepgram API key not configured' });
     }
 
-    // Generate temporary token from Deepgram
-    const response = await fetch('https://api.deepgram.com/v1/auth/grant', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Token ${deepgramApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        ttl_seconds: 300, // 5 minutes
-      }),
+    // Return the API key for WebSocket authentication
+    // The client will use this with the WebSocket connection
+    res.json({ 
+      access_token: deepgramApiKey,
+      token_type: 'Token',
+      expires_in: 3600 // Key doesn't expire, but client can refresh hourly
     });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('Deepgram token generation failed:', error);
-      return res.status(response.status).json({ 
-        error: 'Failed to generate Deepgram token',
-        details: error 
-      });
-    }
-
-    const data = await response.json();
-    res.json(data);
   } catch (error) {
-    console.error('Error generating Deepgram token:', error);
+    console.error('Error in token endpoint:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -183,9 +171,11 @@ router.post('/tts', async (req, res) => {
       });
     }
 
-    // Stream audio back to client
+    // Get audio as buffer and send (works with Vercel)
+    const audioBuffer = await response.arrayBuffer();
     res.setHeader('Content-Type', 'audio/mpeg');
-    response.body.pipe(res);
+    res.setHeader('Content-Length', audioBuffer.byteLength);
+    res.send(Buffer.from(audioBuffer));
 
   } catch (error) {
     console.error('Error in TTS:', error);
