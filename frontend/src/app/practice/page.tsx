@@ -78,6 +78,8 @@ export default function PracticePage() {
   // Chapter selection state for granular quiz generation
   const [sectionStructures, setSectionStructures] = useState<Map<string, SectionStructure>>(new Map());
   const [loadingStructures, setLoadingStructures] = useState<Set<string>>(new Set());
+  // Map: sectionId -> Set of selected file/material IDs (when empty and section selected = all files)
+  const [selectedFiles, setSelectedFiles] = useState<Map<string, Set<string>>>(new Map());
   // Map: materialId -> Set of selected chapter numbers (empty set = all chapters)
   const [selectedChapters, setSelectedChapters] = useState<Map<string, Set<number>>>(new Map());
   const [expandedMaterials, setExpandedMaterials] = useState<Set<string>>(new Set());
@@ -117,6 +119,9 @@ export default function PracticePage() {
   // Flashcard state
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
+  const [masteredCards, setMasteredCards] = useState<Set<string>>(new Set());
+  const [needsPracticeCards, setNeedsPracticeCards] = useState<Set<string>>(new Set());
+  const [flashcardSessionSaved, setFlashcardSessionSaved] = useState(false);
 
   // Voice Agent state
   const [isVoiceAgentOpen, setIsVoiceAgentOpen] = useState(false);
@@ -208,31 +213,22 @@ export default function PracticePage() {
     }
   }, [viewMode, materialFolders]);
 
-  // Load section structures when materials are selected
+  // Load ALL section structures when entering generate view (so topics/chapters are available before selection)
   useEffect(() => {
-    const loadStructures = async () => {
-      // Collect all section IDs from selected materials
-      const sectionIds = new Set<string>();
+    const loadAllStructures = async () => {
+      // Collect ALL section IDs from all material folders
+      const allSectionIds = new Set<string>();
       
-      // From individually selected materials
-      selectedMaterials.forEach(sectionId => {
-        sectionIds.add(sectionId);
-      });
-      
-      // From selected folders
-      selectedFolders.forEach(folderId => {
-        const folder = findFolderById(materialFolders, folderId);
-        if (folder) {
-          const collectSections = (f: Folder) => {
-            f.sections.forEach(s => sectionIds.add(s.id));
-            f.subfolders.forEach(sf => collectSections(sf));
-          };
-          collectSections(folder);
-        }
-      });
+      const collectAllSections = (folders: Folder[]) => {
+        folders.forEach(folder => {
+          folder.sections.forEach(s => allSectionIds.add(s.id));
+          collectAllSections(folder.subfolders);
+        });
+      };
+      collectAllSections(materialFolders);
 
       // Load structure for each section that we don't have yet
-      for (const sectionId of sectionIds) {
+      for (const sectionId of allSectionIds) {
         if (!sectionStructures.has(sectionId) && !loadingStructures.has(sectionId)) {
           setLoadingStructures(prev => new Set(prev).add(sectionId));
           try {
@@ -251,10 +247,10 @@ export default function PracticePage() {
       }
     };
 
-    if (viewMode === 'generate' && (selectedMaterials.size > 0 || selectedFolders.size > 0)) {
-      loadStructures();
+    if (viewMode === 'generate' && materialFolders.length > 0) {
+      loadAllStructures();
     }
-  }, [viewMode, selectedMaterials, selectedFolders, materialFolders, sectionStructures, loadingStructures]);
+  }, [viewMode, materialFolders, sectionStructures, loadingStructures]);
 
   // Auto-read first question/card when entering quiz/flashcard mode with voice agent open
   const prevViewModeRef = useRef<ViewMode>(viewMode);
@@ -441,6 +437,7 @@ export default function PracticePage() {
         difficulty: quiz.difficulty,
         created_at: quiz.created_at,
         attempt_count: 0,
+        best_score: quiz.best_score,
         questions: quiz.questions || [],
       };
       setActiveQuiz(mappedQuiz);
@@ -484,6 +481,63 @@ export default function PracticePage() {
     }
   };
 
+  // View quiz results/review (loads quiz and shows best attempt with answers)
+  const viewQuizResults = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
+    try {
+      setLocalLoading(true);
+      const quiz = await practiceApi.getQuiz(quizId);
+      
+      // Fetch attempts to get the best one
+      let bestAttemptAnswers: Record<string, string> = {};
+      try {
+        const attempts = await practiceApi.getQuizAttempts(quizId);
+        if (attempts.length > 0) {
+          // Find the best attempt (highest percentage)
+          const bestAttempt = attempts.reduce((best, current) => 
+            current.percentage > best.percentage ? current : best
+          , attempts[0]);
+          
+          // Extract answers from best attempt
+          if (bestAttempt.answers) {
+            // answers is an object like { "q-0": { answer: "A", isCorrect: true, ... }, ... }
+            Object.entries(bestAttempt.answers).forEach(([questionId, data]) => {
+              if (typeof data === 'object' && data !== null && 'answer' in data) {
+                bestAttemptAnswers[questionId] = (data as { answer: string }).answer;
+              }
+            });
+          }
+        }
+      } catch (attemptErr) {
+        console.error('Failed to load quiz attempts:', attemptErr);
+        // Continue without attempt data
+      }
+      
+      const mappedQuiz: SavedQuiz & { questions: Question[] } = {
+        id: quiz.id,
+        name: quiz.name,
+        total_questions: quiz.total_questions,
+        difficulty: quiz.difficulty,
+        created_at: quiz.created_at,
+        attempt_count: 0,
+        best_score: quiz.best_score,
+        questions: quiz.questions || [],
+      };
+      setActiveQuiz(mappedQuiz);
+      setActiveQuizId(quizId);
+      setPracticeMode(mode);
+      setCurrentQuestionIndex(0);
+      setSelectedAnswers(bestAttemptAnswers); // Pre-populate with best attempt answers
+      setShowResults(true); // Go straight to results view
+      setPreviousView(viewMode);
+      setViewMode('quiz');
+    } catch (err) {
+      console.error('Failed to load quiz:', err);
+      setError('Failed to load practice set');
+    } finally {
+      setLocalLoading(false);
+    }
+  };
+
   const loadFlashcardSet = async (setId: string) => {
     try {
       setLocalLoading(true);
@@ -494,13 +548,16 @@ export default function PracticePage() {
         name: set.name,
         total_cards: set.total_cards,
         created_at: set.created_at,
-        mastery_count: 0,
+        mastery_count: set.mastery_count || 0,
         cards: set.cards || [],
       };
       setActiveFlashcardSet(mappedSet);
       setActiveFlashcardSetId(setId);
       setCurrentCardIndex(0);
       setIsFlipped(false);
+      setMasteredCards(new Set());
+      setNeedsPracticeCards(new Set());
+      setFlashcardSessionSaved(false);
       setPreviousView(viewMode); // Track where we came from
       setViewMode('flashcards');
     } catch (err) {
@@ -632,32 +689,69 @@ export default function PracticePage() {
 
   const selectedFileCount = useMemo(() => {
     let count = 0;
+    const countedSections = new Set<string>();
+    
+    // Helper to find folder by ID (inline to avoid dependency issues)
+    const findFolder = (folderList: Folder[], folderId: string): Folder | null => {
+      for (const folder of folderList) {
+        if (folder.id === folderId) return folder;
+        const found = findFolder(folder.subfolders, folderId);
+        if (found) return found;
+      }
+      return null;
+    };
+    
     // Count from selected folders
     selectedFolders.forEach(folderId => {
       const folderItem = flattenedItems.find(i => i.folderId === folderId);
       if (folderItem) {
         count += folderItem.fileCount;
+        // Mark all sections in this folder as counted
+        const folder = findFolder(materialFolders, folderId);
+        if (folder) {
+          const markSections = (f: Folder) => {
+            f.sections.forEach(s => countedSections.add(s.id));
+            f.subfolders.forEach(sf => markSections(sf));
+          };
+          markSections(folder);
+        }
       }
     });
+    
     // Count from individually selected materials (that aren't already in a selected folder)
     selectedMaterials.forEach(sectionId => {
+      if (countedSections.has(sectionId)) return;
       const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
       // If material is found and its parent folder is not selected, count its files
       if (materialItem) {
         if (!materialItem.parentFolderId || !isMaterialSelectionDisabled(materialItem.parentFolderId)) {
           count += materialItem.fileCount;
+          countedSections.add(sectionId);
         }
       } else {
         // Material not found in flattenedItems but is selected - count as 1 file minimum
         count += 1;
+        countedSections.add(sectionId);
       }
     });
+    
+    // Count from chapter-selected files (sections not already counted)
+    selectedFiles.forEach((files, sectionId) => {
+      if (countedSections.has(sectionId)) return;
+      const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
+      if (!materialItem?.parentFolderId || !isMaterialSelectionDisabled(materialItem.parentFolderId)) {
+        count += files.size;
+      }
+    });
+    
     return count;
-  }, [selectedFolders, selectedMaterials, flattenedItems]);
+  }, [selectedFolders, selectedMaterials, selectedFiles, flattenedItems, materialFolders]);
 
-  // Count total selected items (folders + individual materials)
+  // Count total selected items (folders + individual materials + sections with chapter selections)
   const totalSelectedCount = useMemo(() => {
     let count = selectedFolders.size;
+    const countedSections = new Set<string>();
+    
     // Count materials that aren't already in a selected folder
     selectedMaterials.forEach(sectionId => {
       const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
@@ -665,14 +759,27 @@ export default function PracticePage() {
       if (materialItem) {
         if (!materialItem.parentFolderId || !isMaterialSelectionDisabled(materialItem.parentFolderId)) {
           count++;
+          countedSections.add(sectionId);
         }
       } else {
         // Material not found in flattenedItems but is selected - still count it
         count++;
+        countedSections.add(sectionId);
       }
     });
+    
+    // Also count sections with file/chapter selections that aren't already counted
+    selectedFiles.forEach((files, sectionId) => {
+      if (files.size > 0 && !countedSections.has(sectionId)) {
+        const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
+        if (!materialItem?.parentFolderId || !isMaterialSelectionDisabled(materialItem.parentFolderId)) {
+          count++;
+        }
+      }
+    });
+    
     return count;
-  }, [selectedFolders, selectedMaterials, flattenedItems]);
+  }, [selectedFolders, selectedMaterials, selectedFiles, flattenedItems]);
 
   // Toggle folder selection
   const toggleFolderSelection = (folderId: string) => {
@@ -712,9 +819,93 @@ export default function PracticePage() {
       const next = new Set(prev);
       if (next.has(sectionId)) {
         next.delete(sectionId);
+        // Clear file and chapter selections for this section
+        setSelectedFiles(prevFiles => {
+          const nextFiles = new Map(prevFiles);
+          nextFiles.delete(sectionId);
+          return nextFiles;
+        });
+        // Clear chapter selections for materials in this section
+        const structure = sectionStructures.get(sectionId);
+        if (structure?.materials) {
+          setSelectedChapters(prevChapters => {
+            const nextChapters = new Map(prevChapters);
+            structure.materials.forEach(m => nextChapters.delete(m.id));
+            return nextChapters;
+          });
+        }
       } else {
         next.add(sectionId);
+        // Auto-select all files when selecting a material
+        const structure = sectionStructures.get(sectionId);
+        if (structure?.materials && structure.materials.length > 0) {
+          setSelectedFiles(prevFiles => {
+            const nextFiles = new Map(prevFiles);
+            nextFiles.set(sectionId, new Set(structure.materials.map(m => m.id)));
+            return nextFiles;
+          });
+          // Auto-select all chapters for each file
+          setSelectedChapters(prevChapters => {
+            const nextChapters = new Map(prevChapters);
+            structure.materials.forEach(m => {
+              if (m.hasChapters && m.chapters.length > 0) {
+                nextChapters.set(m.id, new Set(m.chapters.map(ch => ch.number)));
+              }
+            });
+            return nextChapters;
+          });
+        }
       }
+      return next;
+    });
+  };
+
+  // Toggle file selection within a section
+  const toggleFileSelection = (sectionId: string, materialId: string, chapters: { number: number }[]) => {
+    setSelectedFiles(prev => {
+      const next = new Map(prev);
+      const currentFiles = next.get(sectionId) || new Set<string>();
+      const newFiles = new Set(currentFiles);
+      
+      if (newFiles.has(materialId)) {
+        newFiles.delete(materialId);
+        // Clear chapter selections for this file
+        setSelectedChapters(prevChapters => {
+          const nextChapters = new Map(prevChapters);
+          nextChapters.delete(materialId);
+          return nextChapters;
+        });
+      } else {
+        newFiles.add(materialId);
+        // Auto-select all chapters when selecting a file
+        if (chapters.length > 0) {
+          setSelectedChapters(prevChapters => {
+            const nextChapters = new Map(prevChapters);
+            nextChapters.set(materialId, new Set(chapters.map(ch => ch.number)));
+            return nextChapters;
+          });
+        }
+      }
+      
+      next.set(sectionId, newFiles);
+      
+      // If no files selected, also deselect the material
+      if (newFiles.size === 0) {
+        setSelectedMaterials(prevMats => {
+          const nextMats = new Set(prevMats);
+          nextMats.delete(sectionId);
+          return nextMats;
+        });
+        next.delete(sectionId);
+      } else if (!selectedMaterials.has(sectionId)) {
+        // If selecting a file but material not selected, select it
+        setSelectedMaterials(prevMats => {
+          const nextMats = new Set(prevMats);
+          nextMats.add(sectionId);
+          return nextMats;
+        });
+      }
+      
       return next;
     });
   };
@@ -741,12 +932,15 @@ export default function PracticePage() {
   const clearSelection = () => {
     setSelectedFolders(new Set());
     setSelectedMaterials(new Set());
+    setSelectedFiles(new Map());
     setSelectedChapters(new Map());
     setExpandedMaterials(new Set());
   };
 
   // Toggle chapter selection for a material
-  const toggleChapterSelection = (materialId: string, chapterNum: number) => {
+  // Note: Selecting chapters does NOT select the entire material/section - 
+  // it only selects that specific chapter within the file
+  const toggleChapterSelection = (sectionId: string, materialId: string, chapterNum: number, totalChapters: number) => {
     setSelectedChapters(prev => {
       const next = new Map(prev);
       const currentChapters = next.get(materialId) || new Set<number>();
@@ -760,8 +954,36 @@ export default function PracticePage() {
       
       if (newChapters.size === 0) {
         next.delete(materialId);
+        // If no chapters selected, deselect the file too
+        setSelectedFiles(prevFiles => {
+          const nextFiles = new Map(prevFiles);
+          const currentFilesSet = nextFiles.get(sectionId);
+          if (currentFilesSet) {
+            const newFilesSet = new Set(currentFilesSet);
+            newFilesSet.delete(materialId);
+            if (newFilesSet.size === 0) {
+              nextFiles.delete(sectionId);
+            } else {
+              nextFiles.set(sectionId, newFilesSet);
+            }
+          }
+          return nextFiles;
+        });
       } else {
         next.set(materialId, newChapters);
+        // Ensure file is tracked when selecting chapters (but NOT the entire material/section)
+        setSelectedFiles(prevFiles => {
+          const nextFiles = new Map(prevFiles);
+          const currentFilesSet = nextFiles.get(sectionId) || new Set<string>();
+          if (!currentFilesSet.has(materialId)) {
+            const newFilesSet = new Set(currentFilesSet);
+            newFilesSet.add(materialId);
+            nextFiles.set(sectionId, newFilesSet);
+          }
+          return nextFiles;
+        });
+        // Note: We intentionally do NOT add to selectedMaterials here
+        // The generation logic will pick up sectionIds from selectedFiles
       }
       
       return next;
@@ -777,12 +999,32 @@ export default function PracticePage() {
     });
   };
 
-  // Clear chapter selection for a material (use all chapters)
+  // Clear chapter selection for a material - also deselects the file
   const clearChapterSelection = (materialId: string) => {
     setSelectedChapters(prev => {
       const next = new Map(prev);
       next.delete(materialId);
       return next;
+    });
+    
+    // Find and deselect the file from its parent section
+    selectedFiles.forEach((files, sectionId) => {
+      if (files.has(materialId)) {
+        setSelectedFiles(prevFiles => {
+          const nextFiles = new Map(prevFiles);
+          const currentFilesSet = nextFiles.get(sectionId);
+          if (currentFilesSet) {
+            const newFilesSet = new Set(currentFilesSet);
+            newFilesSet.delete(materialId);
+            if (newFilesSet.size === 0) {
+              nextFiles.delete(sectionId);
+            } else {
+              nextFiles.set(sectionId, newFilesSet);
+            }
+          }
+          return nextFiles;
+        });
+      }
     });
   };
 
@@ -885,6 +1127,7 @@ export default function PracticePage() {
       
       console.log('[Generate] Selected folders:', Array.from(selectedFolders));
       console.log('[Generate] Selected materials:', Array.from(selectedMaterials));
+      console.log('[Generate] Selected files (from chapters):', Array.from(selectedFiles.keys()));
       console.log('[Generate] Section IDs from folders:', [...sectionIds]);
       
       // Collect from individually selected materials (that aren't already in a selected folder)
@@ -902,6 +1145,18 @@ export default function PracticePage() {
         if (!sectionIds.includes(sectionId)) {
           sectionIds.push(sectionId);
           console.log('[Generate] Added material section ID:', sectionId);
+        }
+      });
+
+      // Also collect from selectedFiles (chapters selected without selecting entire material)
+      selectedFiles.forEach((fileIds, sectionId) => {
+        if (fileIds.size > 0 && !sectionIds.includes(sectionId)) {
+          // Only add if parent folder is not already selected
+          const materialItem = flattenedItems.find(i => i.sectionId === sectionId);
+          if (!materialItem?.parentFolderId || !isMaterialSelectionDisabled(materialItem.parentFolderId)) {
+            sectionIds.push(sectionId);
+            console.log('[Generate] Added section ID from chapter selection:', sectionId);
+          }
         }
       });
 
@@ -1243,12 +1498,95 @@ export default function PracticePage() {
     }
   }, [currentCardIndex, isVoiceAgentOpen]);
 
+  // Mark current card as mastered and move to next
+  const handleMarkMastered = useCallback(() => {
+    const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+    const currentCard = cards[currentCardIndex];
+    if (!currentCard) return;
+
+    const cardId = currentCard.id || `card-${currentCardIndex}`;
+    setMasteredCards(prev => {
+      const next = new Set(prev);
+      next.add(cardId);
+      return next;
+    });
+    // Remove from needs practice if it was there
+    setNeedsPracticeCards(prev => {
+      const next = new Set(prev);
+      next.delete(cardId);
+      return next;
+    });
+
+    // Move to next card
+    if (currentCardIndex < cards.length - 1) {
+      setIsFlipped(false);
+      if (isVoiceAgentOpen) {
+        shouldAutoReadCardRef.current = true;
+      }
+      setCurrentCardIndex(prev => prev + 1);
+    }
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+
+  // Mark current card as needs practice and move to next
+  const handleMarkNeedsPractice = useCallback(() => {
+    const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+    const currentCard = cards[currentCardIndex];
+    if (!currentCard) return;
+
+    const cardId = currentCard.id || `card-${currentCardIndex}`;
+    setNeedsPracticeCards(prev => {
+      const next = new Set(prev);
+      next.add(cardId);
+      return next;
+    });
+    // Remove from mastered if it was there
+    setMasteredCards(prev => {
+      const next = new Set(prev);
+      next.delete(cardId);
+      return next;
+    });
+
+    // Move to next card
+    if (currentCardIndex < cards.length - 1) {
+      setIsFlipped(false);
+      if (isVoiceAgentOpen) {
+        shouldAutoReadCardRef.current = true;
+      }
+      setCurrentCardIndex(prev => prev + 1);
+    }
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+
+  // Save flashcard session when all cards have been reviewed
+  const saveFlashcardSession = useCallback(async () => {
+    const setId = generatedFlashcards?.flashcardSetId || activeFlashcardSetId;
+    if (!setId || !userId || flashcardSessionSaved) return;
+
+    const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+    const cardsStudied = masteredCards.size + needsPracticeCards.size;
+    const cardsMastered = masteredCards.size;
+
+    try {
+      await practiceApi.recordFlashcardSession(setId, {
+        userId,
+        cardsStudied,
+        cardsMastered,
+      });
+      setFlashcardSessionSaved(true);
+      refreshPracticeOverview();
+    } catch (err) {
+      console.error('Failed to save flashcard session:', err);
+    }
+  }, [generatedFlashcards, activeFlashcardSetId, activeFlashcardSet, userId, masteredCards, needsPracticeCards, flashcardSessionSaved, refreshPracticeOverview]);
+
   const handleResetFlashcards = () => {
     setGeneratedFlashcards(null);
     setActiveFlashcardSet(null);
     setActiveFlashcardSetId(null);
     setCurrentCardIndex(0);
     setIsFlipped(false);
+    setMasteredCards(new Set());
+    setNeedsPracticeCards(new Set());
+    setFlashcardSessionSaved(false);
     // Go back to folder view if we came from there
     setViewMode(previousView === 'folder' ? 'folder' : 'overview');
   };
@@ -1411,10 +1749,10 @@ export default function PracticePage() {
     return (
       <div key={folder.id}>
         <div
-          className={`flex items-center gap-3 px-3 py-2 transition ${
-            isSelected 
-              ? 'bg-indigo-900/30 border-l-2 border-indigo-500' 
-              : 'hover:bg-slate-800/50'
+          className={`flex items-center gap-3 px-3 py-2 transition border-l-2 ${
+            isSelected
+              ? 'border-indigo-500'
+              : 'border-transparent hover:bg-slate-800/30'
           } ${isSelectedViaParent ? 'opacity-60' : ''}`}
           style={{ paddingLeft: `${depth * 20 + 12}px` }}
         >
@@ -1423,7 +1761,7 @@ export default function PracticePage() {
               e.stopPropagation();
               toggleExpand(folder.id);
             }}
-            className={`w-5 h-5 flex items-center justify-center text-slate-500 hover:text-white transition ${
+            className={`w-5 h-5 flex items-center justify-center text-slate-500 hover:text-white transition cursor-pointer ${
               !hasContent ? 'invisible' : ''
             }`}
           >
@@ -1441,7 +1779,7 @@ export default function PracticePage() {
           <button
             onClick={() => !isSelectedViaParent && toggleFolderSelection(folder.id)}
             disabled={isSelectedViaParent}
-            className={`w-5 h-5 border rounded flex items-center justify-center transition ${
+            className={`w-5 h-5 border flex items-center justify-center transition ${
               isSelected
                 ? 'bg-indigo-600 border-indigo-600'
                 : 'border-slate-600 hover:border-slate-400'
@@ -1485,56 +1823,59 @@ export default function PracticePage() {
   // Render material item for generation
   // - If parent folder is selected: shows as selected, can't be toggled individually
   // - If parent folder is NOT selected: can be individually selected
-  // - Shows chapter selection inline when material is selected and has chapters
+  // - Expand arrow only expands, doesn't select
+  // - Clicking checkbox or row selects and auto-expands
+  // - Shows file selection when material is expanded
+  // - Shows topics/chapters when file is expanded
   const renderMaterialItem = (section: MaterialSection, depth: number, parentFolderId: string) => {
     const isParentSelected = isMaterialSelectionDisabled(parentFolderId);
     const isSelected = isMaterialSelected(section.id, parentFolderId);
-    const isIndividuallySelected = selectedMaterials.has(section.id) && !isParentSelected;
+    const isMaterialExpanded = expandedMaterials.has(section.id);
     
-    // Get chapter info for this material
+    // Get structure info for this section
     const structure = sectionStructures.get(section.id);
-    const materialWithChapters = structure?.materials?.find(m => m.hasChapters && m.chapters.length > 0);
-    const hasChapters = !!materialWithChapters;
-    const isExpanded = expandedMaterials.has(materialWithChapters?.id || '');
-    const materialSelectedChapters = materialWithChapters ? selectedChapters.get(materialWithChapters.id) : undefined;
-    const hasChapterFilter = materialSelectedChapters && materialSelectedChapters.size > 0;
+    const hasFiles = structure?.materials && structure.materials.length > 0;
+    const sectionSelectedFiles = selectedFiles.get(section.id);
+    const selectedFileCount = sectionSelectedFiles?.size || 0;
+    const totalFiles = structure?.materials?.length || section.files.length;
 
-    const handleMaterialClick = (e: React.MouseEvent) => {
+    const handleMaterialSelect = (e: React.MouseEvent) => {
       e.stopPropagation();
       if (!isParentSelected) {
         toggleMaterialSelection(section.id);
+        // Auto-expand when selecting
+        if (!isSelected && hasFiles) {
+          setExpandedMaterials(prev => new Set(prev).add(section.id));
+        }
       }
     };
     
     const handleExpandClick = (e: React.MouseEvent) => {
       e.stopPropagation();
-      if (materialWithChapters) {
-        toggleMaterialExpansion(materialWithChapters.id);
-      }
+      toggleMaterialExpansion(section.id);
     };
 
     return (
       <div key={section.id}>
         <div
-          className={`flex items-center gap-3 px-3 py-2 transition ${
+          className={`flex items-center gap-3 px-3 py-2 transition border-l-2 ${
             isSelected 
               ? isParentSelected 
-                ? 'bg-indigo-900/20 border-l-2 border-indigo-500/50 opacity-60' 
-                : 'bg-indigo-900/30 border-l-2 border-indigo-500'
-              : 'hover:bg-slate-800/50'
-          } ${isParentSelected ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                ? 'border-indigo-500/50 opacity-60' 
+                : 'border-indigo-500'
+              : 'border-transparent hover:bg-slate-800/30'
+          } ${isParentSelected ? 'cursor-not-allowed' : ''}`}
           style={{ paddingLeft: `${depth * 20 + 12}px` }}
-          onClick={handleMaterialClick}
         >
-          {/* Expand arrow for materials with chapters */}
-          {hasChapters && isSelected ? (
+          {/* Expand arrow for materials with files - only expands, doesn't select */}
+          {hasFiles ? (
             <button
               onClick={handleExpandClick}
               className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-white transition cursor-pointer"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                className={`h-4 w-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                className={`h-4 w-4 transition-transform ${isMaterialExpanded ? 'rotate-90' : ''}`}
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -1548,9 +1889,9 @@ export default function PracticePage() {
 
           <button
             type="button"
-            onClick={handleMaterialClick}
+            onClick={handleMaterialSelect}
             disabled={isParentSelected}
-            className={`w-5 h-5 border rounded flex items-center justify-center transition flex-shrink-0 ${
+            className={`w-5 h-5 border flex items-center justify-center transition flex-shrink-0 ${
               isSelected
                 ? isParentSelected
                   ? 'bg-indigo-600/50 border-indigo-600/50 cursor-not-allowed'
@@ -1566,85 +1907,204 @@ export default function PracticePage() {
           </button>
 
           <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 flex-shrink-0 ${isSelected ? 'text-slate-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
           </svg>
 
           <div className="flex-1 min-w-0 flex items-center gap-2">
-            <span className={isSelected ? 'text-slate-300' : 'text-slate-400'}>{section.title}</span>
+            <span className={isSelected ? 'text-white' : 'text-slate-400'}>{section.title}</span>
             <span className="text-slate-600 text-sm">
-              {section.files.length} file{section.files.length !== 1 ? 's' : ''}
+              {totalFiles} file{totalFiles !== 1 ? 's' : ''}
             </span>
             {isParentSelected && isSelected && (
               <span className="text-indigo-400 text-xs">(included in folder)</span>
             )}
-            {hasChapters && isSelected && (
-              <span className="text-slate-500 text-xs">
-                • {materialWithChapters?.chapters.length} chapters
-              </span>
-            )}
-            {hasChapterFilter && (
-              <span className="text-xs bg-indigo-600 px-1.5 py-0.5 rounded text-white">
-                {materialSelectedChapters?.size} selected
+            {isSelected && selectedFileCount > 0 && selectedFileCount < totalFiles && (
+              <span className="text-xs text-indigo-400">
+                {selectedFileCount}/{totalFiles} files
               </span>
             )}
           </div>
         </div>
         
-        {/* Inline chapter selection */}
-        {hasChapters && isSelected && isExpanded && materialWithChapters && (
+        {/* File selection - show when material is expanded and has files */}
+        {hasFiles && isMaterialExpanded && structure?.materials && (
           <div 
-            className="border-l-2 border-indigo-500/30 bg-slate-900/50"
+            className="border-l border-slate-700"
             style={{ marginLeft: `${depth * 20 + 32}px` }}
           >
-            <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between">
-              <span className="text-xs text-slate-400">Filter by chapters (optional)</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    selectAllChapters(materialWithChapters.id, materialWithChapters.chapters);
-                  }}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
-                >
-                  All
-                </button>
-                <span className="text-slate-600">|</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    clearChapterSelection(materialWithChapters.id);
-                  }}
-                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
-                >
-                  None
-                </button>
-              </div>
-            </div>
-            <div className="max-h-48 overflow-y-auto">
-              {materialWithChapters.chapters.map(chapter => {
-                const isChapterSelected = materialSelectedChapters?.has(chapter.number) || false;
-                return (
-                  <label
-                    key={chapter.number}
-                    className="flex items-center gap-3 px-4 py-2 hover:bg-slate-800/50 cursor-pointer group"
-                    onClick={(e) => e.stopPropagation()}
+            {structure.materials.map(material => {
+              const isFileSelected = sectionSelectedFiles?.has(material.id) || false;
+              const hasChapters = material.hasChapters && material.chapters.length > 0;
+              const isFileExpanded = expandedMaterials.has(`file-${material.id}`);
+              const fileSelectedChapters = selectedChapters.get(material.id);
+              const selectedChapterCount = fileSelectedChapters?.size || 0;
+              // Check if these are topics (generated) or chapters
+              const areTopics = hasChapters && material.chapters.some(ch => ch.isGeneratedTopic);
+              const itemLabel = areTopics ? 'topics' : 'chapters';
+
+              const handleFileSelect = (e: React.MouseEvent) => {
+                e.stopPropagation();
+                toggleFileSelection(section.id, material.id, material.chapters || []);
+                // Auto-expand when selecting if has chapters
+                if (!isFileSelected && hasChapters) {
+                  setExpandedMaterials(prev => new Set(prev).add(`file-${material.id}`));
+                }
+              };
+
+              return (
+                <div key={material.id}>
+                  <div
+                    className={`flex items-center gap-3 px-3 py-2 transition border-l-2 ${
+                      isFileSelected ? 'border-indigo-500' : 'border-transparent hover:bg-slate-800/30'
+                    }`}
                   >
-                    <input
-                      type="checkbox"
-                      checked={isChapterSelected}
-                      onChange={() => toggleChapterSelection(materialWithChapters.id, chapter.number)}
-                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
-                    />
+                    {/* Expand arrow for files with chapters - only expands, doesn't select */}
+                    {hasChapters ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedMaterials(prev => {
+                            const next = new Set(prev);
+                            const key = `file-${material.id}`;
+                            if (next.has(key)) {
+                              next.delete(key);
+                            } else {
+                              next.add(key);
+                            }
+                            return next;
+                          });
+                        }}
+                        className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-white transition cursor-pointer"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className={`h-4 w-4 transition-transform ${isFileExpanded ? 'rotate-90' : ''}`}
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    ) : (
+                      <div className="w-5" />
+                    )}
+
+                    <button
+                      type="button"
+                      className={`w-5 h-5 border flex items-center justify-center transition flex-shrink-0 cursor-pointer ${
+                        isFileSelected
+                          ? 'bg-indigo-600 border-indigo-600'
+                          : 'border-slate-600 hover:border-slate-400'
+                      }`}
+                      onClick={handleFileSelect}
+                    >
+                      {isFileSelected && (
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-white" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                    </button>
+
+                    <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 flex-shrink-0 ${isFileSelected ? 'text-slate-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+
                     <div className="flex-1 min-w-0 flex items-center gap-2">
-                      <span className="text-sm text-slate-300 group-hover:text-white transition">
-                        {chapter.isGeneratedTopic ? '' : `Ch ${chapter.number}: `}{chapter.title}
+                      <span className={isFileSelected ? 'text-white' : 'text-slate-400'} title={material.fileName}>
+                        {material.title || material.fileName}
                       </span>
-                      <span className="text-xs text-slate-500">({chapter.percentage})</span>
+                      {hasChapters && (
+                        <span className="text-slate-500 text-xs">
+                          {material.chapters.length} {itemLabel}
+                        </span>
+                      )}
+                      {isFileSelected && hasChapters && selectedChapterCount > 0 && selectedChapterCount < material.chapters.length && (
+                        <span className="text-xs text-indigo-400">
+                          {selectedChapterCount}/{material.chapters.length} {itemLabel}
+                        </span>
+                      )}
                     </div>
-                  </label>
-                );
-              })}
-            </div>
+                  </div>
+
+                  {/* Topic/Chapter selection - show when file is expanded and has chapters */}
+                  {hasChapters && isFileExpanded && (
+                    <div 
+                      className="border-l border-slate-700"
+                      style={{ marginLeft: `20px` }}
+                    >
+                      <div className="px-4 py-1.5 border-b border-slate-800 flex items-center justify-between">
+                        <span className="text-xs text-slate-500">{areTopics ? 'Topics' : 'Chapters'}</span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              selectAllChapters(material.id, material.chapters);
+                              // Also ensure file and material are selected (without re-selecting chapters)
+                              if (!sectionSelectedFiles?.has(material.id)) {
+                                setSelectedFiles(prevFiles => {
+                                  const nextFiles = new Map(prevFiles);
+                                  const currentFilesSet = nextFiles.get(section.id) || new Set<string>();
+                                  const newFilesSet = new Set(currentFilesSet);
+                                  newFilesSet.add(material.id);
+                                  nextFiles.set(section.id, newFilesSet);
+                                  return nextFiles;
+                                });
+                              }
+                              if (!selectedMaterials.has(section.id)) {
+                                setSelectedMaterials(prevMats => {
+                                  const nextMats = new Set(prevMats);
+                                  nextMats.add(section.id);
+                                  return nextMats;
+                                });
+                              }
+                            }}
+                            className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                          >
+                            All
+                          </button>
+                          <span className="text-slate-600">|</span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              clearChapterSelection(material.id);
+                            }}
+                            className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                          >
+                            None
+                          </button>
+                        </div>
+                      </div>
+                      <div className="max-h-40 overflow-y-auto">
+                        {material.chapters.map(chapter => {
+                          const isChapterSelected = fileSelectedChapters?.has(chapter.number) || false;
+                          return (
+                            <label
+                              key={chapter.number}
+                              className="flex items-center gap-3 px-4 py-1.5 hover:bg-slate-800/30 cursor-pointer group"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChapterSelected}
+                                onChange={() => toggleChapterSelection(section.id, material.id, chapter.number, material.chapters.length)}
+                                className="w-4 h-4 border-slate-600 bg-transparent text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
+                              />
+                              <div className="flex-1 min-w-0 flex items-center gap-2">
+                                <span className="text-sm text-slate-300 group-hover:text-white transition">
+                                  {chapter.isGeneratedTopic ? '' : `Ch ${chapter.number}: `}{chapter.title}
+                                </span>
+                                <span className="text-xs text-slate-500">({chapter.percentage})</span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -2046,24 +2506,56 @@ export default function PracticePage() {
             onAction={handleVoiceAction}
           />
 
-          <div className="max-w-3xl mx-auto">
-            <div className="mb-8 text-center">
-              <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
-                {practiceMode === 'multiple_choice' ? 'Multiple Choice' : 'True/False'} Complete
-              </p>
-              <h1 className="mt-1 text-2xl font-semibold text-white">
-                {quizName}
-              </h1>
-              <div className="mt-4 flex items-center justify-center gap-4">
-                <div className="text-6xl font-bold text-white">{score.percentage}%</div>
-                <div className="text-left">
-                  <div className="text-slate-400">Score</div>
-                  <div className="text-white text-lg">{score.correct} / {score.total} correct</div>
+          <div className="w-full">
+            <div className="mb-8 flex items-start justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
+                  {practiceMode === 'multiple_choice' ? 'Multiple Choice' : 'True/False'} • {quizStartTime ? 'Completed' : 'Best Score'}
+                </p>
+                <h1 className="mt-1 text-2xl font-semibold text-white">
+                  {quizName}
+                </h1>
+                <div className="mt-4 flex items-center gap-4">
+                  <div className="text-5xl font-bold text-white">{score.percentage}%</div>
+                  <div>
+                    <div className="text-slate-400">{quizStartTime ? 'Your Score' : 'Best Score'}</div>
+                    <div className="text-white text-lg">{score.correct} / {score.total} correct</div>
+                  </div>
+                  {!quizStartTime && activeQuiz?.best_score !== undefined && activeQuiz.best_score !== score.percentage && (
+                    <div className="text-slate-500 text-sm">
+                      (Highest: {activeQuiz.best_score}%)
+                    </div>
+                  )}
                 </div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleResetQuiz}
+                  className="flex items-center gap-2 border border-slate-600 px-3 py-1.5 text-sm text-slate-300 transition hover:border-white hover:text-white cursor-pointer"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                  {previousView === 'folder' ? 'Back to Folder' : 'Back to Practice'}
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedAnswers({});
+                    setCurrentQuestionIndex(0);
+                    setShowResults(false);
+                    setQuizStartTime(Date.now());
+                  }}
+                  className="flex items-center gap-2 bg-white px-3 py-1.5 text-sm text-black font-semibold transition hover:bg-slate-200 cursor-pointer"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Practice Again
+                </button>
               </div>
             </div>
 
-            <div className="space-y-4 mb-8">
+            <div className="grid grid-cols-2 gap-4 mb-8">
               {questions.map((q, idx) => {
                 // Ensure consistent ID handling - match how IDs are created in the quiz UI
                 const questionId = q.id ? String(q.id) : `q-${idx}`;
@@ -2073,9 +2565,9 @@ export default function PracticePage() {
                 const isAnswered = userAnswer !== undefined && userAnswer !== null && userAnswer !== '';
                 const isCorrect = isAnswered && userAnswer === correctAnswer;
                 return (
-                  <div key={questionId} className={`border p-4 ${isCorrect ? 'border-green-500 bg-green-900/20' : 'border-red-500 bg-red-900/20'}`}>
+                  <div key={questionId} className="p-4 border border-slate-800">
                     <div className="flex items-start gap-3">
-                      <span className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-sm ${isCorrect ? 'bg-green-500' : 'bg-red-500'}`}>
+                      <span className={`flex-shrink-0 w-6 h-6 flex items-center justify-center text-sm ${isCorrect ? 'text-green-500' : 'text-red-500'}`}>
                         {isCorrect ? '✓' : '✗'}
                       </span>
                       <div className="flex-1">
@@ -2092,18 +2584,6 @@ export default function PracticePage() {
                   </div>
                 );
               })}
-            </div>
-
-            <div className="flex gap-4 justify-center">
-              <button
-                onClick={handleResetQuiz}
-                className="flex items-center gap-2 border border-white px-4 py-2 text-sm font-semibold text-white transition hover:bg-white hover:text-black cursor-pointer"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-                {previousView === 'folder' ? 'Back to Folder' : 'Back to Practice'}
-              </button>
             </div>
           </div>
         </div>
@@ -2367,6 +2847,12 @@ export default function PracticePage() {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     const setName = generatedFlashcards?.name || activeFlashcardSet?.name || 'Practice Set';
     const currentCard = cards[currentCardIndex];
+    const currentCardId = currentCard?.id || `card-${currentCardIndex}`;
+    const isCurrentCardMastered = masteredCards.has(currentCardId);
+    const isCurrentCardNeedsPractice = needsPracticeCards.has(currentCardId);
+    const totalReviewed = masteredCards.size + needsPracticeCards.size;
+    const allCardsReviewed = totalReviewed === cards.length;
+    const masteryPercentage = cards.length > 0 ? Math.round((masteredCards.size / cards.length) * 100) : 0;
 
     if (!currentCard) {
       return (
@@ -2382,6 +2868,123 @@ export default function PracticePage() {
               </svg>
               {previousView === 'folder' ? 'Back to Folder' : 'Back to Practice'}
             </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Show completion summary when all cards are reviewed
+    if (allCardsReviewed) {
+      // Auto-save session when all cards reviewed
+      if (!flashcardSessionSaved) {
+        saveFlashcardSession();
+      }
+
+      return (
+        <div className="h-full overflow-auto -mt-4">
+          <div className="max-w-2xl mx-auto">
+            <div className="mb-8 flex items-start justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-400">
+                  Flashcards • Completed
+                </p>
+                <h1 className="mt-1 text-2xl font-semibold text-white">
+                  {setName}
+                </h1>
+                <div className="mt-4 flex items-center gap-4">
+                  <div className="text-5xl font-bold text-white">{masteryPercentage}%</div>
+                  <div>
+                    <div className="text-slate-400">Mastery Rate</div>
+                    <div className="text-white text-lg">{masteredCards.size} / {cards.length} mastered</div>
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={handleResetFlashcards}
+                className="flex items-center gap-2 border border-slate-600 px-3 py-1.5 text-sm text-slate-300 transition hover:border-white hover:text-white cursor-pointer"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                {previousView === 'folder' ? 'Back to Folder' : 'Back to Practice'}
+              </button>
+            </div>
+
+            {/* Stats cards */}
+            <div className="grid grid-cols-2 gap-4 mb-8">
+              <div className="p-6 border border-green-600/50 bg-green-900/20">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 flex items-center justify-center bg-green-600/30 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div className="text-3xl font-bold text-green-400">{masteredCards.size}</div>
+                    <div className="text-slate-400 text-sm">Mastered</div>
+                  </div>
+                </div>
+              </div>
+              <div className="p-6 border border-orange-600/50 bg-orange-900/20">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 flex items-center justify-center bg-orange-600/30 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div className="text-3xl font-bold text-orange-400">{needsPracticeCards.size}</div>
+                    <div className="text-slate-400 text-sm">Need More Practice</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-4">
+              <button
+                onClick={() => {
+                  setMasteredCards(new Set());
+                  setNeedsPracticeCards(new Set());
+                  setFlashcardSessionSaved(false);
+                  setCurrentCardIndex(0);
+                  setIsFlipped(false);
+                }}
+                className="flex-1 flex items-center justify-center gap-2 bg-white px-4 py-3 text-sm text-black font-semibold transition hover:bg-slate-200 cursor-pointer"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Practice All Again
+              </button>
+              {needsPracticeCards.size > 0 && (
+                <button
+                  onClick={() => {
+                    // Find first card that needs practice
+                    const needsPracticeIndices: number[] = [];
+                    cards.forEach((card, idx) => {
+                      const cardId = card.id || `card-${idx}`;
+                      if (needsPracticeCards.has(cardId)) {
+                        needsPracticeIndices.push(idx);
+                      }
+                    });
+                    if (needsPracticeIndices.length > 0) {
+                      setMasteredCards(new Set());
+                      setNeedsPracticeCards(new Set());
+                      setFlashcardSessionSaved(false);
+                      setCurrentCardIndex(needsPracticeIndices[0]);
+                      setIsFlipped(false);
+                    }
+                  }}
+                  className="flex-1 flex items-center justify-center gap-2 border border-orange-500 px-4 py-3 text-sm text-orange-400 font-semibold transition hover:bg-orange-900/30 cursor-pointer"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  Practice Weak Cards ({needsPracticeCards.size})
+                </button>
+              )}
+            </div>
           </div>
         </div>
       );
@@ -2418,6 +3021,14 @@ export default function PracticePage() {
               <h1 className="mt-1 text-xl font-semibold text-white">
                 {setName}
               </h1>
+              {/* Mastery progress indicator */}
+              {totalReviewed > 0 && (
+                <div className="mt-1 flex items-center gap-2 text-xs">
+                  <span className="text-green-400">{masteredCards.size} mastered</span>
+                  <span className="text-slate-600">•</span>
+                  <span className="text-orange-400">{needsPracticeCards.size} need practice</span>
+                </div>
+              )}
             </div>
             <button
               onClick={handleResetFlashcards}
@@ -2460,6 +3071,68 @@ export default function PracticePage() {
               </div>
             </div>
           </div>
+
+          {/* Mastery buttons - shown when card is flipped */}
+          {isFlipped && !isCurrentCardMastered && !isCurrentCardNeedsPractice && (
+            <div className="flex gap-4 mt-6">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleMarkNeedsPractice();
+                }}
+                className="flex-1 flex items-center justify-center gap-2 border border-orange-500 px-4 py-3 text-sm text-orange-400 font-semibold transition hover:bg-orange-900/30 cursor-pointer"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                Need More Practice
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleMarkMastered();
+                }}
+                className="flex-1 flex items-center justify-center gap-2 bg-green-600 px-4 py-3 text-sm text-white font-semibold transition hover:bg-green-500 cursor-pointer"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                Mastered
+              </button>
+            </div>
+          )}
+
+          {/* Show status if already reviewed */}
+          {(isCurrentCardMastered || isCurrentCardNeedsPractice) && (
+            <div className={`mt-6 p-3 text-center text-sm ${
+              isCurrentCardMastered 
+                ? 'bg-green-900/30 border border-green-600/50 text-green-400' 
+                : 'bg-orange-900/30 border border-orange-600/50 text-orange-400'
+            }`}>
+              {isCurrentCardMastered ? '✓ Marked as mastered' : '⚠ Marked as needs practice'}
+              <button
+                onClick={() => {
+                  // Clear the status to allow re-rating
+                  if (isCurrentCardMastered) {
+                    setMasteredCards(prev => {
+                      const next = new Set(prev);
+                      next.delete(currentCardId);
+                      return next;
+                    });
+                  } else {
+                    setNeedsPracticeCards(prev => {
+                      const next = new Set(prev);
+                      next.delete(currentCardId);
+                      return next;
+                    });
+                  }
+                }}
+                className="ml-2 text-slate-400 hover:text-white underline"
+              >
+                Change
+              </button>
+            </div>
+          )}
 
           <div className="flex items-center justify-between mt-6">
             <button
@@ -2684,8 +3357,9 @@ export default function PracticePage() {
           >
             {isGenerating ? (
               <>
-                <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
-                Generating...
+                <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full flex-shrink-0" />
+                <span>{generationStatus || 'Generating...'}</span>
+                <span className="text-black/50 font-normal">• Usually takes 1-2 minutes</span>
               </>
             ) : (
               <>
@@ -2698,16 +3372,6 @@ export default function PracticePage() {
               </>
             )}
           </button>
-          
-          {/* Loading message with helpful info */}
-          {isGenerating && (
-            <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
-              <p className="font-medium mb-1">🎯 {generationStatus || 'Generating your practice set...'}</p>
-              <p className="text-xs text-indigo-300/80">
-                This typically takes 1-2 minutes. For large content selections, it may take longer.
-              </p>
-            </div>
-          )}
         </div>
       </div>
     );
@@ -2756,8 +3420,8 @@ export default function PracticePage() {
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div 
-              className="w-12 h-12 rounded-lg flex items-center justify-center"
-              style={{ backgroundColor: `${getFolderColor(folder.color)}20` }}
+              className="w-12 h-12 flex items-center justify-center border"
+              style={{ borderColor: getFolderColor(folder.color) }}
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7" fill={getFolderColor(folder.color)} viewBox="0 0 24 24">
                 <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z" />
@@ -2824,13 +3488,14 @@ export default function PracticePage() {
                 return (
                   <div 
                     key={quiz.id} 
-                    className="group border border-slate-800 bg-black p-5 hover:border-slate-600 hover:bg-slate-900/50 transition"
+                    onClick={() => viewQuizResults(quiz.id, quiz.question_type || 'multiple_choice')}
+                    className="group border border-slate-800 p-5 hover:border-slate-600 transition cursor-pointer"
                   >
                     <div className="flex items-center gap-4">
-                      <div className={`flex-shrink-0 w-12 h-12 rounded-lg flex items-center justify-center ${
-                        quiz.question_type === 'true_false' ? 'bg-green-900/50' : 'bg-blue-900/50'
+                      <div className={`flex-shrink-0 w-10 h-10 flex items-center justify-center border ${
+                        quiz.question_type === 'true_false' ? 'border-green-600' : 'border-blue-600'
                       }`}>
-                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-6 w-6 ${
+                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${
                           quiz.question_type === 'true_false' ? 'text-green-400' : 'text-blue-400'
                         }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -2839,10 +3504,10 @@ export default function PracticePage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <h3 className="text-white font-medium text-base">{quiz.name}</h3>
-                          <span className={`text-xs px-2 py-0.5 rounded ${
+                          <span className={`text-xs px-2 py-0.5 border ${
                             quiz.question_type === 'true_false' 
-                              ? 'bg-green-900/50 text-green-400' 
-                              : 'bg-blue-900/50 text-blue-400'
+                              ? 'border-green-600 text-green-400' 
+                              : 'border-blue-600 text-blue-400'
                           }`}>
                             {quiz.question_type === 'true_false' ? 'T/F' : 'MC'}
                           </span>
@@ -2853,11 +3518,14 @@ export default function PracticePage() {
                       </div>
                       {/* Practice button - shows correct type based on quiz */}
                       <button
-                        onClick={() => loadQuiz(quiz.id, quiz.question_type || 'multiple_choice')}
-                        className={`px-4 py-2 text-sm font-medium transition cursor-pointer ${
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          loadQuiz(quiz.id, quiz.question_type || 'multiple_choice');
+                        }}
+                        className={`px-4 py-2 text-sm font-medium transition cursor-pointer border ${
                           quiz.question_type === 'true_false'
-                            ? 'bg-green-600 hover:bg-green-500 text-white'
-                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                            ? 'border-green-600 text-green-400 hover:bg-green-600 hover:text-white'
+                            : 'border-blue-600 text-blue-400 hover:bg-blue-600 hover:text-white'
                         }`}
                       >
                         {quiz.question_type === 'true_false' ? 'Practice True/False' : 'Practice Multiple Choice'}
@@ -2918,11 +3586,11 @@ export default function PracticePage() {
                 return (
                   <div 
                     key={set.id} 
-                    className="group border border-slate-800 bg-black p-5 hover:border-slate-600 hover:bg-slate-900/50 transition"
+                    className="group border border-slate-800 p-5 hover:border-slate-600 transition"
                   >
                     <div className="flex items-center gap-4">
-                      <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-slate-800 flex items-center justify-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center border border-slate-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                         </svg>
                       </div>
@@ -3043,16 +3711,16 @@ export default function PracticePage() {
             const masteryPercent = totalCards > 0 ? Math.round((masteredCards / totalCards) * 100) : null;
 
             return (
-              <div 
-                key={folder.id} 
-                className="group flex items-center gap-6 border border-slate-800 bg-black p-5 h-[106px] transition hover:border-slate-600 hover:bg-slate-900/50 cursor-pointer"
+              <div
+                key={folder.id}
+                className="group flex items-center gap-6 border border-slate-800 p-5 h-[106px] transition hover:border-slate-600 cursor-pointer"
                 onClick={() => handleEnterFolder(folder.id)}
               >
                 {/* Left: Folder icon */}
                 <div className="flex-shrink-0">
                   <div 
-                    className="w-14 h-14 rounded-lg flex items-center justify-center"
-                    style={{ backgroundColor: `${getFolderColor(folder.color)}20` }}
+                    className="w-14 h-14 flex items-center justify-center border"
+                    style={{ borderColor: getFolderColor(folder.color) }}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill={getFolderColor(folder.color)} viewBox="0 0 24 24">
                       <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z" />
@@ -3127,7 +3795,7 @@ export default function PracticePage() {
           {!showCreateFolderModal ? (
             <button
               onClick={() => setShowCreateFolderModal(true)}
-              className="w-full flex items-center justify-center gap-3 border border-dashed border-slate-700 bg-black p-5 h-[106px] text-slate-500 hover:text-slate-300 hover:border-slate-500 hover:bg-slate-900/50 transition cursor-pointer"
+              className="w-full flex items-center justify-center gap-3 border border-dashed border-slate-700 p-5 h-[106px] text-slate-500 hover:text-slate-300 hover:border-slate-500 transition cursor-pointer"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
@@ -3135,13 +3803,13 @@ export default function PracticePage() {
               <span className="font-semibold">Add Practice Folder</span>
             </button>
           ) : (
-            <div className="border border-slate-800 bg-black p-5 h-[106px]">
+            <div className="border border-slate-800 p-5 h-[106px]">
               <div className="flex items-center gap-6">
                 {/* Left: Folder icon placeholder */}
                 <div className="flex-shrink-0">
                   <div 
-                    className="w-14 h-14 rounded-lg flex items-center justify-center"
-                    style={{ backgroundColor: `${newFolderColor}20` }}
+                    className="w-14 h-14 flex items-center justify-center border"
+                    style={{ borderColor: newFolderColor }}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill={newFolderColor} viewBox="0 0 24 24">
                       <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z" />
@@ -3265,7 +3933,7 @@ export default function PracticePage() {
               {unfolderedQuizzes.map(quiz => (
                 <div
                   key={quiz.id}
-                  className="group border border-slate-800 bg-black p-4 transition hover:border-slate-600 hover:bg-slate-900/50 cursor-pointer"
+                  className="group border border-slate-800 p-4 transition hover:border-slate-600 cursor-pointer"
                   onClick={() => loadQuiz(quiz.id, quiz.question_type || 'multiple_choice')}
                 >
                   <div className="flex items-start justify-between mb-3">
@@ -3319,7 +3987,7 @@ export default function PracticePage() {
               {unfolderedFlashcards.map(set => (
                 <div
                   key={set.id}
-                  className="group border border-slate-800 bg-black p-4 transition hover:border-slate-600 hover:bg-slate-900/50 cursor-pointer"
+                  className="group border border-slate-800 p-4 transition hover:border-slate-600 cursor-pointer"
                   onClick={() => loadFlashcardSet(set.id)}
                 >
                   <div className="flex items-start justify-between mb-3">

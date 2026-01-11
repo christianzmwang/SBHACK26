@@ -129,8 +129,9 @@ Important matching rules:
       max_tokens: 500
     });
 
-    // Parse the JSON response
-    const cleanResponse = response.replace(/```json\n?|\n?```/g, '').trim();
+    // Parse the JSON response - remove markdown code fences if present
+    const codeBlockRegex = new RegExp('```json\\n?|\\n?```', 'g');
+    const cleanResponse = response.replace(codeBlockRegex, '').trim();
     const intentResult = JSON.parse(cleanResponse);
     
     return {
