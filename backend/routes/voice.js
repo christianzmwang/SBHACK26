@@ -119,6 +119,7 @@ Important matching rules:
 - "repeat", "repeat question", "say that again", "what was the question", "read question" → REPEAT_QUESTION (in quiz context)
 - "read the answers", "what are the options", "read options", "repeat answers" → REPEAT_ANSWERS (in quiz context)
 - For ANSWER_QUESTION actions, leave conversationalResponse empty or null (the frontend handles the response)
+`;
 
   try {
     const response = await chatCompletion([
