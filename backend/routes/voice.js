@@ -22,9 +22,9 @@ async function detectVoiceIntent(transcript, context, userId) {
       // Get folders with their sections
       const foldersResult = await query(`
         SELECT f.id, f.name, 
-               json_agg(json_build_object('id', ms.id, 'title', ms.title)) as sections
+               json_agg(json_build_object('id', fs.id, 'title', fs.title)) as sections
         FROM folders f
-        LEFT JOIN material_sections ms ON ms.folder_id = f.id
+        LEFT JOIN folder_sections fs ON fs.folder_id = f.id
         WHERE f.user_id = $1
         GROUP BY f.id, f.name
       `, [userId]);

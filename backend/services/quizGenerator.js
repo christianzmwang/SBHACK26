@@ -487,11 +487,17 @@ const generateQuestionsForCluster = async (cluster, options) => {
             clusterIndex
           };
         })
-        // Filter out multiple choice questions without valid options
+        // Filter out multiple choice questions without valid options or correct answer
         .filter(q => {
-          if (q.questionType === 'multiple_choice' && !q.options) {
-            console.warn(`[Cluster ${clusterIndex + 1}] Filtering out MC question without options:`, q.question?.substring(0, 50));
-            return false;
+          if (q.questionType === 'multiple_choice') {
+            if (!q.options) {
+              console.warn(`[Cluster ${clusterIndex + 1}] Filtering out MC question without options:`, q.question?.substring(0, 50));
+              return false;
+            }
+            if (!q.correctAnswer || !['A', 'B', 'C', 'D'].includes(q.correctAnswer)) {
+              console.warn(`[Cluster ${clusterIndex + 1}] Filtering out MC question without valid correctAnswer (got: ${q.correctAnswer}):`, q.question?.substring(0, 50));
+              return false;
+            }
           }
           return true;
         });
@@ -1611,29 +1617,73 @@ export const deriveFlashcardsFromQuiz = async (options) => {
   }
 
   console.log(`[FlashcardDerive] Deriving ${quizQuestions.length} flashcards from quiz questions`);
+  
+  // Debug: Log the first few questions to see their structure
+  if (quizQuestions.length > 0) {
+    console.log(`[FlashcardDerive] Sample question structure:`, JSON.stringify(quizQuestions[0], null, 2));
+  }
 
-  // Convert each MC question to a flashcard
+  // Convert each question to a flashcard - be more lenient with filtering
   const flashcards = quizQuestions
-    .filter(q => q.question && q.options && q.correct_answer)
+    .filter(q => {
+      const hasQuestion = q.question && q.question.trim();
+      if (!hasQuestion) {
+        console.log(`[FlashcardDerive] Skipping question without text`);
+        return false;
+      }
+      return true;
+    })
     .map(q => {
       // Get the correct answer text from the options
       const correctAnswerKey = q.correct_answer || q.correctAnswer;
       let correctAnswerText = '';
       
+      // Try to get answer text from options
       if (q.options && correctAnswerKey) {
-        // Handle both object and parsed JSON string options
-        const opts = typeof q.options === 'string' ? JSON.parse(q.options) : q.options;
-        correctAnswerText = opts[correctAnswerKey] || opts[correctAnswerKey.toLowerCase()] || '';
+        try {
+          // Handle both object and parsed JSON string options
+          const opts = typeof q.options === 'string' ? JSON.parse(q.options) : q.options;
+          if (opts && typeof opts === 'object') {
+            correctAnswerText = opts[correctAnswerKey] || opts[correctAnswerKey?.toLowerCase()] || '';
+          }
+        } catch (e) {
+          console.log(`[FlashcardDerive] Error parsing options:`, e.message);
+        }
       }
 
-      // If we couldn't get the answer text, use the explanation as fallback
-      if (!correctAnswerText && q.explanation) {
-        correctAnswerText = q.explanation;
+      // Build back content with fallbacks
+      let backContent = '';
+      
+      if (correctAnswerText) {
+        backContent = correctAnswerText;
+      } else if (correctAnswerKey) {
+        backContent = `Answer: ${correctAnswerKey}`;
+      } else if (q.explanation) {
+        backContent = q.explanation;
+      } else if (q.options) {
+        // If we have options but no correct answer, show all options
+        try {
+          const opts = typeof q.options === 'string' ? JSON.parse(q.options) : q.options;
+          if (opts && typeof opts === 'object') {
+            backContent = Object.entries(opts)
+              .map(([key, val]) => `${key}. ${val}`)
+              .join('\n');
+          }
+        } catch (e) {
+          backContent = 'See original quiz for answer';
+        }
+      } else {
+        backContent = 'See original quiz for answer';
+      }
+
+      // Add explanation to back if available and not already used
+      if (q.explanation && backContent !== q.explanation) {
+        backContent += `\n\nExplanation: ${q.explanation}`;
       }
 
       return {
-        front: q.question,
-        back: correctAnswerText || `Answer: ${correctAnswerKey}`,
+        front: q.question.trim(),
+        back: backContent,
         topic: q.topic,
         chapter: q.chapter,
         difficulty: q.difficulty
@@ -1642,6 +1692,14 @@ export const deriveFlashcardsFromQuiz = async (options) => {
     .filter(card => card.front && card.back);
 
   if (flashcards.length === 0) {
+    console.error(`[FlashcardDerive] Failed to derive flashcards. Questions had:`, 
+      quizQuestions.map(q => ({
+        hasQuestion: !!q.question,
+        hasOptions: !!q.options,
+        hasCorrectAnswer: !!(q.correct_answer || q.correctAnswer),
+        hasExplanation: !!q.explanation
+      }))
+    );
     throw new Error('Could not derive any valid flashcards from the quiz questions');
   }
 

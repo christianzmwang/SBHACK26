@@ -29,6 +29,9 @@ type ViewMode = 'overview' | 'generate' | 'quiz' | 'flashcards' | 'folder';
 // Practice mode for viewing a set
 type PracticeMode = 'multiple_choice' | 'true_false' | 'flashcards';
 
+// Generation type - what the user wants to create
+type GenerationType = 'multiple_choice' | 'true_false' | 'flashcards';
+
 // Flattened item for selection
 interface SelectableItem {
   id: string;
@@ -85,6 +88,7 @@ export default function PracticePage() {
   const [setSize, setSetSize] = useState<string>('20');
   const [practiceNameInput, setPracticeNameInput] = useState('');
   const [saveToPracticeFolder, setSaveToPracticeFolder] = useState<string | null>(null);
+  const [selectedGenerationType, setSelectedGenerationType] = useState<GenerationType>('multiple_choice');
 
   // Generated content state
   const [generatedQuiz, setGeneratedQuiz] = useState<GeneratedQuiz | null>(null);
@@ -877,7 +881,7 @@ export default function PracticePage() {
         return;
       }
 
-      // Generate ALL 3 types for the practice set
+      // Generate the selected type only
       const baseName = practiceNameInput || `Practice Set - ${new Date().toISOString().split('T')[0]}`;
       
       // Build chapter filter if any chapters are selected
@@ -892,56 +896,74 @@ export default function PracticePage() {
         console.log('[Generate] Using chapter filter:', chapterFilter);
       }
       
-      // 1. Generate Multiple Choice questions
-      setGenerationStatus('Generating Multiple Choice questions...');
-      const mcQuiz = await practiceApi.generateQuiz({
-        sectionIds,
-        userId,
-        questionCount: parsedSetSize,
-        questionType: 'multiple_choice',
-        difficulty: 'mixed',
-        name: baseName,
-        folderId: saveToPracticeFolder || undefined,
-        onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
-        chapterFilter,
-      });
-      
-      // 2. Generate True/False questions
-      setGenerationStatus('Generating True/False questions...');
-      const tfQuiz = await practiceApi.generateQuiz({
-        sectionIds,
-        userId,
-        questionCount: parsedSetSize,
-        questionType: 'true_false',
-        difficulty: 'mixed',
-        name: baseName,
-        folderId: saveToPracticeFolder || undefined,
-        onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
-        chapterFilter,
-      });
-      
-      // 3. Derive Flashcards from Multiple Choice questions
-      // Uses the MC question as front, correct answer text as back
-      setGenerationStatus('Creating Flashcards from questions...');
-      const flashcardSet = await practiceApi.deriveFlashcardsFromQuiz({
-        questions: mcQuiz.questions,
-        userId,
-        sectionIds,
-        name: baseName,
-        folderId: saveToPracticeFolder || undefined,
-      });
-      
-      setGenerationStatus('');
-      
-      // Start with multiple choice quiz view
-      setGeneratedQuiz(mcQuiz);
-      setGeneratedFlashcards(null);
-      setCurrentQuestionIndex(0);
-      setSelectedAnswers({});
-      setShowResults(false);
-      setQuizStartTime(Date.now());
-      setPracticeMode('multiple_choice');
-      setViewMode('quiz');
+      // Generate based on selected type
+      if (selectedGenerationType === 'multiple_choice') {
+        setGenerationStatus('Generating Multiple Choice questions...');
+        const mcQuiz = await practiceApi.generateQuiz({
+          sectionIds,
+          userId,
+          questionCount: parsedSetSize,
+          questionType: 'multiple_choice',
+          difficulty: 'mixed',
+          name: baseName,
+          folderId: saveToPracticeFolder || undefined,
+          onProgress: (msg) => setGenerationStatus(msg),
+          chapterFilter,
+        });
+        
+        setGenerationStatus('');
+        setGeneratedQuiz(mcQuiz);
+        setGeneratedFlashcards(null);
+        setCurrentQuestionIndex(0);
+        setSelectedAnswers({});
+        setShowResults(false);
+        setQuizStartTime(Date.now());
+        setPracticeMode('multiple_choice');
+        setViewMode('quiz');
+        
+      } else if (selectedGenerationType === 'true_false') {
+        setGenerationStatus('Generating True/False questions...');
+        const tfQuiz = await practiceApi.generateQuiz({
+          sectionIds,
+          userId,
+          questionCount: parsedSetSize,
+          questionType: 'true_false',
+          difficulty: 'mixed',
+          name: baseName,
+          folderId: saveToPracticeFolder || undefined,
+          onProgress: (msg) => setGenerationStatus(msg),
+          chapterFilter,
+        });
+        
+        setGenerationStatus('');
+        setGeneratedQuiz(tfQuiz);
+        setGeneratedFlashcards(null);
+        setCurrentQuestionIndex(0);
+        setSelectedAnswers({});
+        setShowResults(false);
+        setQuizStartTime(Date.now());
+        setPracticeMode('true_false');
+        setViewMode('quiz');
+        
+      } else if (selectedGenerationType === 'flashcards') {
+        // Generate flashcards directly
+        setGenerationStatus('Generating flashcards...');
+        const flashcardSet = await practiceApi.generateFlashcards({
+          sectionIds,
+          userId,
+          count: parsedSetSize,
+          name: baseName,
+          folderId: saveToPracticeFolder || undefined,
+          chapterFilter,
+        });
+        
+        setGenerationStatus('');
+        setGeneratedFlashcards(flashcardSet);
+        setGeneratedQuiz(null);
+        setCurrentCardIndex(0);
+        setIsFlipped(false);
+        setViewMode('flashcards');
+      }
       
       // Refresh overview to show all new practice sets
       refreshPracticeOverview();
@@ -1610,56 +1632,54 @@ export default function PracticePage() {
           const baseName = materialName || folderName || `Practice Set - ${new Date().toISOString().split('T')[0]}`;
           
           try {
-            // Generate ALL 3 types for the practice set
-            // 1. Multiple Choice
-            setGenerationStatus('Generating Multiple Choice questions...');
-            const mcQuiz = await practiceApi.generateQuiz({
-              sectionIds,
-              userId: userId!,
-              questionCount: parsedCount,
-              questionType: 'multiple_choice',
-              difficulty: 'mixed',
-              name: `${baseName} (Multiple Choice)`,
-              folderId: folderId || undefined,
-              onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
-            });
+            // Generate based on selected generation type (defaults to multiple_choice)
+            const genType = selectedGenerationType;
             
-            // 2. True/False
-            setGenerationStatus('Generating True/False questions...');
-            await practiceApi.generateQuiz({
-              sectionIds,
-              userId: userId!,
-              questionCount: parsedCount,
-              questionType: 'true_false',
-              difficulty: 'mixed',
-              name: `${baseName} (True/False)`,
-              folderId: folderId || undefined,
-              onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
-            });
+            if (genType === 'multiple_choice' || genType === 'true_false') {
+              setGenerationStatus(`Generating ${genType === 'multiple_choice' ? 'Multiple Choice' : 'True/False'} questions...`);
+              const quiz = await practiceApi.generateQuiz({
+                sectionIds,
+                userId: userId!,
+                questionCount: parsedCount,
+                questionType: genType,
+                difficulty: 'mixed',
+                name: baseName,
+                folderId: folderId || undefined,
+                onProgress: (msg) => setGenerationStatus(msg),
+              });
+              
+              setGenerationStatus('');
+              setGeneratedQuiz(quiz);
+              setGeneratedFlashcards(null);
+              setCurrentQuestionIndex(0);
+              setSelectedAnswers({});
+              setShowResults(false);
+              setQuizStartTime(Date.now());
+              setPracticeMode(genType);
+              setViewMode('quiz');
+            } else {
+              // Flashcards
+              setGenerationStatus('Generating flashcards...');
+              const flashcardSet = await practiceApi.generateFlashcards({
+                sectionIds,
+                userId: userId!,
+                count: parsedCount,
+                name: baseName,
+                folderId: folderId || undefined,
+              });
+              
+              setGenerationStatus('');
+              setGeneratedFlashcards(flashcardSet);
+              setGeneratedQuiz(null);
+              setCurrentCardIndex(0);
+              setIsFlipped(false);
+              setViewMode('flashcards');
+            }
             
-            // 3. Derive Flashcards from Multiple Choice questions
-            setGenerationStatus('Creating Flashcards from questions...');
-            await practiceApi.deriveFlashcardsFromQuiz({
-              questions: mcQuiz.questions,
-              userId: userId!,
-              sectionIds,
-              name: `${baseName} (Flashcards)`,
-              folderId: folderId || undefined,
-            });
-            
-            setGenerationStatus('');
-            setGeneratedQuiz(mcQuiz);
-            setGeneratedFlashcards(null);
-            setCurrentQuestionIndex(0);
-            setSelectedAnswers({});
-            setShowResults(false);
-            setQuizStartTime(Date.now());
-            setPracticeMode('multiple_choice');
-            setViewMode('quiz');
             refreshPracticeOverview();
           } catch (err) {
             console.error('Voice-initiated quiz generation failed:', err);
-            setError(err instanceof Error ? err.message : 'Failed to generate quiz');
+            setError(err instanceof Error ? err.message : 'Failed to generate practice set');
           } finally {
             setIsGenerating(false);
           }
@@ -2474,7 +2494,9 @@ export default function PracticePage() {
 
             {/* Set size input */}
             <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">Set Size</h3>
+              <h3 className="text-sm font-semibold text-white mb-3">
+                {selectedGenerationType === 'flashcards' ? 'Number of Cards' : 'Number of Questions'}
+              </h3>
               <div className="flex items-center gap-3">
                 <input
                   type="number"
@@ -2484,7 +2506,9 @@ export default function PracticePage() {
                   max="100"
                   className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
                 />
-                <span className="text-slate-400 text-sm">questions</span>
+                <span className="text-slate-400 text-sm">
+                  {selectedGenerationType === 'flashcards' ? 'cards' : 'questions'}
+                </span>
               </div>
               <p className="text-slate-500 text-xs mt-2">Min: 5, Max: 100</p>
             </div>
@@ -2618,33 +2642,100 @@ export default function PracticePage() {
               </select>
             </div>
 
-            {/* What will be generated */}
+            {/* Generation type selector */}
             <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">What Will Be Generated</h3>
-              <div className="space-y-2 text-sm text-slate-400">
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="text-blue-400">Multiple Choice</span>
-                  <span className="text-slate-500">questions</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="text-green-400">True/False</span>
-                  <span className="text-slate-500">statements</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="text-purple-400">Flashcards</span>
-                  <span className="text-slate-500">for review</span>
-                </div>
+              <h3 className="text-sm font-semibold text-white mb-3">What to Generate</h3>
+              <div className="space-y-2">
+                <label 
+                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
+                    selectedGenerationType === 'multiple_choice' 
+                      ? 'border-blue-500 bg-blue-500/10' 
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="generationType"
+                    value="multiple_choice"
+                    checked={selectedGenerationType === 'multiple_choice'}
+                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
+                    className="sr-only"
+                  />
+                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                    selectedGenerationType === 'multiple_choice' 
+                      ? 'border-blue-500' 
+                      : 'border-slate-500'
+                  }`}>
+                    {selectedGenerationType === 'multiple_choice' && (
+                      <div className="w-2 h-2 rounded-full bg-blue-500" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-blue-400 font-medium">Multiple Choice</span>
+                    <p className="text-xs text-slate-500 mt-0.5">A, B, C, D answer options</p>
+                  </div>
+                </label>
+                
+                <label 
+                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
+                    selectedGenerationType === 'true_false' 
+                      ? 'border-green-500 bg-green-500/10' 
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="generationType"
+                    value="true_false"
+                    checked={selectedGenerationType === 'true_false'}
+                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
+                    className="sr-only"
+                  />
+                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                    selectedGenerationType === 'true_false' 
+                      ? 'border-green-500' 
+                      : 'border-slate-500'
+                  }`}>
+                    {selectedGenerationType === 'true_false' && (
+                      <div className="w-2 h-2 rounded-full bg-green-500" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-green-400 font-medium">True / False</span>
+                    <p className="text-xs text-slate-500 mt-0.5">Statement verification questions</p>
+                  </div>
+                </label>
+                
+                <label 
+                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
+                    selectedGenerationType === 'flashcards' 
+                      ? 'border-purple-500 bg-purple-500/10' 
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="generationType"
+                    value="flashcards"
+                    checked={selectedGenerationType === 'flashcards'}
+                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
+                    className="sr-only"
+                  />
+                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                    selectedGenerationType === 'flashcards' 
+                      ? 'border-purple-500' 
+                      : 'border-slate-500'
+                  }`}>
+                    {selectedGenerationType === 'flashcards' && (
+                      <div className="w-2 h-2 rounded-full bg-purple-500" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-purple-400 font-medium">Flashcards</span>
+                    <p className="text-xs text-slate-500 mt-0.5">Front/back cards for memorization</p>
+                  </div>
+                </label>
               </div>
-              <p className="text-slate-500 text-xs mt-3">All 3 types will be created for your practice set</p>
             </div>
 
             {/* Generate button */}
@@ -2656,14 +2747,16 @@ export default function PracticePage() {
               {isGenerating ? (
                 <>
                   <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
-                  Generating... (this may take 1-3 minutes)
+                  Generating...
                 </>
               ) : (
                 <>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  Create Practice Set
+                  {selectedGenerationType === 'multiple_choice' && 'Generate Multiple Choice'}
+                  {selectedGenerationType === 'true_false' && 'Generate True/False'}
+                  {selectedGenerationType === 'flashcards' && 'Generate Flashcards'}
                 </>
               )}
             </button>
@@ -2673,8 +2766,7 @@ export default function PracticePage() {
               <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
                 <p className="font-medium mb-1">🎯 {generationStatus || 'Generating your practice set...'}</p>
                 <p className="text-xs text-indigo-300/80">
-                  Creating Multiple Choice, True/False, and Flashcards. This typically takes 2-5 minutes.
-                  For large content selections, it may take longer.
+                  This typically takes 1-2 minutes. For large content selections, it may take longer.
                 </p>
               </div>
             )}
