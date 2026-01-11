@@ -190,8 +190,9 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
             // User finished speaking - process the accumulated transcript
             handleUtteranceEnd();
           } else if (data.type === 'SpeechStarted') {
-            // User started speaking - if AI is speaking, interrupt it (barge-in)
-            if (isSpeakingRef.current || isProcessingRef.current) {
+            // User started speaking - if AI is ACTUALLY speaking audio, interrupt it (barge-in)
+            // Only interrupt if audio is playing, not during processing/waiting
+            if (isSpeakingRef.current) {
               console.log('User interrupted - stopping AI playback (barge-in)');
               stopCurrentPlayback();
               addCaption('(Interrupted)', 'system');
@@ -231,8 +232,9 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     const speechFinal = data.speech_final;
 
     if (transcript) {
-      // If AI is speaking and we get transcript, user is interrupting (barge-in)
-      if (isSpeakingRef.current || isProcessingRef.current) {
+      // If AI is ACTUALLY speaking audio and we get transcript, user is interrupting (barge-in)
+      // Only interrupt if audio is playing, not during processing/waiting for LLM
+      if (isSpeakingRef.current) {
         console.log('User interrupted with speech - stopping AI (barge-in)');
         stopCurrentPlayback();
         addCaption('(Interrupted)', 'system');
