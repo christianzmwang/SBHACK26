@@ -142,8 +142,19 @@ const processDocument = async (file, metadata) => {
         _tempIndex: i
       }));
 
-      // Filter out chunks without embeddings
-      const validChunks = chunksWithEmbeddings.filter(c => c.embedding);
+      // Filter out chunks without embeddings AND noise chunks (bibliography, index, etc.)
+      const validChunks = chunksWithEmbeddings.filter(c => {
+        if (!c.embedding) return false;
+        // Filter out noise chunks
+        if (isNoiseChunk(c.content)) {
+          c.metadata = c.metadata || {};
+          c.metadata.isNoise = true;
+          return false;
+        }
+        return true;
+      });
+
+      console.log(`Filtered to ${validChunks.length} valid chunks (excluded ${chunksWithEmbeddings.length - validChunks.length} noise chunks)`);
 
       if (validChunks.length > 0) {
         const clusters = await clusterChunks(validChunks);
@@ -152,53 +163,8 @@ const processDocument = async (file, metadata) => {
         // Convert clusters to "chapters" structure
         documentStructure.hasStructure = true;
         documentStructure.chapters = clusters.map((cluster, i) => {
-          // Determine best label for this cluster
-          let title = `Topic ${i + 1}`;
-          
-          // Try to find a frequent topic keyword if available in metadata
-          // (Populated by assignChapterInfoToChunks if it found regex matches)
-          const topicCounts = {};
-          cluster.chunks.forEach(c => {
-            if (c.metadata?.topic) {
-              topicCounts[c.metadata.topic] = (topicCounts[c.metadata.topic] || 0) + 1;
-            }
-          });
-          
-          const sortedTopics = Object.entries(topicCounts).sort((a, b) => b[1] - a[1]);
-          if (sortedTopics.length > 0) {
-            title = `${sortedTopics[0][0]}`;
-          }
-
-          // Extract a representative summary sentence
-          let description = '';
-          if (cluster.centroid) {
-            // Find chunk closest to centroid
-            let bestChunk = null;
-            let bestSim = -1;
-            
-            cluster.chunks.forEach(c => {
-              if (c.embedding) {
-                const sim = cosineSimilarity(c.embedding, cluster.centroid);
-                if (sim > bestSim) {
-                  bestSim = sim;
-                  bestChunk = c;
-                }
-              }
-            });
-
-            if (bestChunk && bestChunk.content) {
-              // Extract first meaningful sentence (simple heuristic)
-              // Match first sentence that is at least 20 chars long and ends with .!?
-              // Avoids headers/lists
-              const sentences = bestChunk.content.match(/[A-Z][^.!?\n]{20,}[.!?]/g);
-              if (sentences && sentences.length > 0) {
-                description = sentences[0];
-              } else {
-                // Fallback to first 100 chars
-                description = bestChunk.content.substring(0, 100).replace(/\n/g, ' ') + '...';
-              }
-            }
-          }
+          // Extract a meaningful topic title from the cluster content
+          const { title, description } = extractTopicTitleAndDescription(cluster);
 
           // Update chunks in the main array with this chapter info
           cluster.chunks.forEach(clusterChunk => {
@@ -451,6 +417,200 @@ const extractFromAudio = async (filePath) => {
     const debugInfo = process.env.DEEPGRAM_API_KEY ? 'API key is set' : 'API key is MISSING';
     throw new Error(`Audio transcription failed (${debugInfo}): ${error.message}`);
   }
+};
+
+/**
+ * Detect if a chunk is "noise" - bibliography, index, table of contents, front matter
+ * These should be excluded from topic clustering
+ * 
+ * @param {string} content - Chunk content
+ * @returns {boolean} - True if chunk appears to be noise
+ */
+const isNoiseChunk = (content) => {
+  if (!content || content.length < 50) return true;
+  
+  const text = content.toLowerCase();
+  const lines = content.split('\n').filter(l => l.trim());
+  
+  // Index detection: lots of page number references like "23, 26–34, 37–8"
+  const pageNumberPattern = /\d+[–-]\d+|\b\d{1,3}(?:\s*,\s*\d{1,3}){2,}/g;
+  const pageNumberMatches = content.match(pageNumberPattern) || [];
+  if (pageNumberMatches.length >= 5) {
+    return true; // Likely an index
+  }
+  
+  // Bibliography detection: author names with years in parentheses "(2018)", "(ed.)", "Press,"
+  const bibPatterns = [
+    /\(\d{4}\)/g,                    // (2018)
+    /\(ed\.?\)/gi,                   // (ed.) or (ed)
+    /University Press/gi,            // Publisher names
+    /\bPress,\s+\d{4}/gi,           // Press, 2018
+    /\bpp\.\s*\d+/gi,               // pp. 123
+    /ISBN/gi,                        // ISBN numbers
+    /\bet\s+al\./gi,                // et al.
+  ];
+  
+  let bibScore = 0;
+  for (const pattern of bibPatterns) {
+    const matches = content.match(pattern) || [];
+    bibScore += matches.length;
+  }
+  
+  if (bibScore >= 5) {
+    return true; // Likely bibliography/references
+  }
+  
+  // Front matter detection: copyright, edition info, etc.
+  const frontMatterKeywords = [
+    'copyright', 'all rights reserved', 'isbn', 'printed in',
+    'first published', 'edition', 'cataloging-in-publication',
+    'library of congress', 'british library', 'typeset'
+  ];
+  
+  let frontMatterScore = 0;
+  for (const keyword of frontMatterKeywords) {
+    if (text.includes(keyword)) frontMatterScore++;
+  }
+  
+  if (frontMatterScore >= 3) {
+    return true; // Likely front matter
+  }
+  
+  // Table of contents detection: many short lines with page numbers
+  const tocPattern = /^.{5,60}\s+\d{1,3}\s*$/gm;
+  const tocMatches = content.match(tocPattern) || [];
+  if (tocMatches.length >= 5 && tocMatches.length / lines.length > 0.5) {
+    return true; // Likely table of contents
+  }
+  
+  // Book list detection: "SERIES" or list of book titles
+  if (text.includes('series') && (text.match(/\b[A-Z]{2,}\b/g) || []).length > 10) {
+    return true; // Likely a series/book listing
+  }
+  
+  return false;
+};
+
+/**
+ * Extract a meaningful title and description from a topic cluster
+ * Looks for the most representative and descriptive content
+ * 
+ * @param {Object} cluster - Cluster with chunks and centroid
+ * @returns {{ title: string, description: string }}
+ */
+const extractTopicTitleAndDescription = (cluster) => {
+  if (!cluster.chunks || cluster.chunks.length === 0) {
+    return { title: 'Unknown Topic', description: '' };
+  }
+  
+  // Collect all content from the cluster
+  const allContent = cluster.chunks.map(c => c.content).join('\n\n');
+  
+  // Try to find a good title from headers or key phrases
+  let title = '';
+  
+  // Look for capitalized phrases that might be section headers
+  const headerPatterns = [
+    /^([A-Z][A-Z\s]{5,50})$/gm,                    // ALL CAPS headers
+    /^(?:The\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,5})$/gm,  // Title Case headers
+    /^(?:\d+\.?\s*)?([A-Z][a-z]+(?:\s+(?:of|the|and|in|to|for|a|an)\s+)?[A-Z]?[a-z]+(?:\s+[A-Z]?[a-z]+){0,4})$/gm, // Numbered sections
+  ];
+  
+  for (const pattern of headerPatterns) {
+    const matches = allContent.match(pattern);
+    if (matches && matches.length > 0) {
+      // Find the most common header (likely the main topic)
+      const headerCounts = {};
+      matches.forEach(h => {
+        const cleaned = h.trim().replace(/^\d+\.?\s*/, '');
+        if (cleaned.length >= 5 && cleaned.length <= 60) {
+          headerCounts[cleaned] = (headerCounts[cleaned] || 0) + 1;
+        }
+      });
+      
+      const sortedHeaders = Object.entries(headerCounts).sort((a, b) => b[1] - a[1]);
+      if (sortedHeaders.length > 0) {
+        title = sortedHeaders[0][0];
+        break;
+      }
+    }
+  }
+  
+  // If no header found, extract key noun phrases
+  if (!title) {
+    // Look for frequently mentioned proper nouns or key terms
+    const properNouns = allContent.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b/g) || [];
+    const nounCounts = {};
+    
+    properNouns.forEach(noun => {
+      // Skip common words and short terms
+      const lower = noun.toLowerCase();
+      if (noun.length >= 4 && 
+          !['The', 'This', 'That', 'These', 'Those', 'They', 'There', 'What', 'When', 'Where', 'Which', 'While', 'With', 'From', 'Into', 'About', 'After', 'Before', 'During'].includes(noun)) {
+        nounCounts[noun] = (nounCounts[noun] || 0) + 1;
+      }
+    });
+    
+    const sortedNouns = Object.entries(nounCounts)
+      .filter(([noun, count]) => count >= 2) // Must appear at least twice
+      .sort((a, b) => b[1] - a[1]);
+    
+    if (sortedNouns.length > 0) {
+      // Take top 2-3 key terms
+      const topTerms = sortedNouns.slice(0, 3).map(([noun]) => noun);
+      title = topTerms.join(', ');
+    }
+  }
+  
+  // Fallback: use first meaningful sentence fragment
+  if (!title) {
+    const firstChunk = cluster.chunks[0];
+    const sentences = firstChunk.content.match(/[A-Z][^.!?\n]{15,80}[.!?]/g) || [];
+    if (sentences.length > 0) {
+      title = sentences[0].substring(0, 60);
+      if (title.length === 60) title += '...';
+    } else {
+      title = 'Topic Content';
+    }
+  }
+  
+  // Clean up title
+  title = title.trim().replace(/\s+/g, ' ');
+  if (title.length > 70) {
+    title = title.substring(0, 67) + '...';
+  }
+  
+  // Extract description from the most representative chunk
+  let description = '';
+  if (cluster.centroid) {
+    let bestChunk = null;
+    let bestSim = -1;
+    
+    cluster.chunks.forEach(c => {
+      if (c.embedding) {
+        const sim = cosineSimilarity(c.embedding, cluster.centroid);
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestChunk = c;
+        }
+      }
+    });
+    
+    if (bestChunk && bestChunk.content) {
+      // Extract a meaningful sentence that describes the topic
+      const sentences = bestChunk.content.match(/[A-Z][^.!?\n]{30,150}[.!?]/g) || [];
+      if (sentences.length > 0) {
+        // Find a sentence that's descriptive (not just a fragment)
+        const descriptive = sentences.find(s => 
+          s.includes(' is ') || s.includes(' are ') || s.includes(' was ') || 
+          s.includes(' were ') || s.includes(' became ') || s.includes(' developed ')
+        );
+        description = descriptive || sentences[0];
+      }
+    }
+  }
+  
+  return { title, description };
 };
 
 /**
