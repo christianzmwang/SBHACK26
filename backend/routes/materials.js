@@ -268,9 +268,43 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
         
         // Collect any topics found in chunks even if chapter structure wasn't sufficient
         const foundTopics = new Set();
+        
+        // Topic extraction patterns (mirrors advancedDocumentProcessor.js)
+        const topicPatterns = [
+          /^(?:Section\s+)?(\d+\.\d+(?:\.\d+)?)\s*[:.]\s*(.+?)$/gim, // 1.2 Title
+          /^(#{3,4})\s+(.+?)$/gim, // ### Subsection
+          /^\*\*([^*]+)\*\*$/gim, // **Topic**
+          /^[A-Z][a-zA-Z0-9\s-]{3,50}:$/gm // "Topic Name:"
+        ];
+
         materialChunks.forEach(chunk => {
+          // 1. Check metadata first
           if (chunk.metadata?.topic) {
             foundTopics.add(chunk.metadata.topic);
+          }
+          
+          // 2. Fallback: Scan chunk content for topic headers
+          // This helps for existing files where metadata might not have been captured
+          if (chunk.content) {
+            // Check the first few lines of the chunk for headers
+            const lines = chunk.content.split('\n').slice(0, 3);
+            for (const line of lines) {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) continue;
+
+              for (const pattern of topicPatterns) {
+                pattern.lastIndex = 0;
+                const match = pattern.exec(trimmedLine);
+                if (match) {
+                  const topicTitle = match[2]?.trim() || match[1]?.trim();
+                  // Clean up title (remove trailing colons, etc)
+                  const cleanTitle = topicTitle?.replace(/[:.]$/, '');
+                  if (cleanTitle && cleanTitle.length > 2 && cleanTitle.length < 100) {
+                    foundTopics.add(cleanTitle);
+                  }
+                }
+              }
+            }
           }
         });
 

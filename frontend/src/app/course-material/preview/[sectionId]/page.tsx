@@ -864,34 +864,16 @@ function PreviewContent() {
                     </button>
                   </div>
                 </div>
-                <div className="p-4 max-h-[calc(100vh-300px)] overflow-y-auto bg-black">
+                <div className="max-h-[calc(100vh-300px)] overflow-y-auto bg-black">
                   {viewMode === 'structure' ? (
                     <div>
                       {isLoadingStructure ? (
-                        <div className="flex items-center gap-2 text-slate-400 py-4">
+                        <div className="flex items-center gap-2 text-slate-400 py-4 px-4">
                           <div className="animate-spin h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full" />
                           <span className="text-sm">Analyzing content structure...</span>
                         </div>
                       ) : contentStructure ? (
                         <div className="space-y-6">
-                          {/* Overall Summary */}
-                          <div className="flex flex-wrap gap-4 text-sm">
-                            <div className="bg-slate-800 px-3 py-2">
-                              <span className="text-slate-400">Materials:</span>
-                              <span className="ml-2 text-white font-medium">{contentStructure.totalMaterials}</span>
-                            </div>
-                            <div className="bg-slate-800 px-3 py-2">
-                              <span className="text-slate-400">Total Chunks:</span>
-                              <span className="ml-2 text-white font-medium">{contentStructure.totalChunks}</span>
-                            </div>
-                            {contentStructure.materialsWithChapters > 0 && (
-                              <div className="bg-slate-800 px-3 py-2">
-                                <span className="text-slate-400">With Chapters:</span>
-                                <span className="ml-2 text-green-400 font-medium">{contentStructure.materialsWithChapters}</span>
-                              </div>
-                            )}
-                          </div>
-
                           {/* Per-Material Structure */}
                           {contentStructure.materials
                             .filter(material => 
@@ -901,9 +883,9 @@ function PreviewContent() {
                               )
                             )
                             .map((material) => (
-                            <div key={material.id} className="border border-slate-700 bg-slate-800/50">
+                            <div key={material.id} className="bg-black">
                               {/* Material Header */}
-                              <div className="flex items-center justify-between p-3 border-b border-slate-700">
+                              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
                                 <div className="flex items-center gap-3">
                                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -923,37 +905,30 @@ function PreviewContent() {
                               </div>
 
                               {/* Material Content */}
-                              <div className="p-3">
+                              <div className="px-4 py-3">
                                 {/* Chapters */}
                                 {material.hasChapters && material.chapters.length > 0 && (
-                                  <div className="space-y-2">
+                                  <div className="space-y-0 divide-y divide-slate-800">
                                     {material.chapters.map((chapter) => (
-                                      <div key={chapter.number} className="bg-slate-800 p-2.5 border border-slate-700">
+                                      <div key={chapter.number} className="py-2.5">
                                         <div className="flex items-center justify-between">
                                           <div className="flex items-center gap-2">
-                                            <span className="text-indigo-400 font-mono text-xs font-medium">Ch {chapter.number}</span>
+                                            <span className="text-indigo-400 font-mono text-xs font-medium min-w-[3rem]">Ch {chapter.number}</span>
                                             <span className="text-white text-sm">{chapter.title}</span>
                                           </div>
-                                          <div className="text-xs text-slate-400">
+                                          <div className="text-xs text-slate-400 flex-shrink-0 ml-4">
                                             {chapter.chunkCount} ({chapter.percentage}%)
                                           </div>
                                         </div>
                                         {chapter.topics.length > 0 && (
-                                          <div className="mt-2 flex flex-wrap gap-1">
+                                          <div className="mt-1.5 flex flex-wrap gap-1 ml-[3.5rem]">
                                             {chapter.topics.map((topic, i) => (
-                                              <span key={i} className="text-xs bg-slate-700 text-slate-300 px-1.5 py-0.5">
+                                              <span key={i} className="text-xs text-slate-400 px-1.5 py-0.5 bg-slate-800/50 rounded-sm">
                                                 {topic}
                                               </span>
                                             ))}
                                           </div>
                                         )}
-                                        {/* Progress bar */}
-                                        <div className="mt-2 h-1 bg-slate-700 overflow-hidden">
-                                          <div 
-                                            className="h-full bg-indigo-500 transition-all" 
-                                            style={{ width: `${chapter.percentage}%` }}
-                                          />
-                                        </div>
                                       </div>
                                     ))}
                                   </div>
@@ -962,26 +937,26 @@ function PreviewContent() {
                                 {/* Topic Summary (for non-chapter content) */}
                                 {!material.hasChapters && material.topicSummary && (
                                   <div className="space-y-3">
-                                    <div className="flex items-start gap-2 text-sm">
-                                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                      </svg>
-                                      <p className="text-slate-400">
-                                        {material.topicSummary.message}
-                                      </p>
-                                    </div>
+                                    {(!material.topicSummary.topics || material.topicSummary.topics.length === 0) && (
+                                      <div className="flex items-start gap-2 text-sm">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <p className="text-slate-400">
+                                          {material.topicSummary.message}
+                                        </p>
+                                      </div>
+                                    )}
                                     
                                     {/* List identified topics if available */}
                                     {material.topicSummary.topics && material.topicSummary.topics.length > 0 && (
-                                      <div className="ml-6">
-                                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-                                          Identified Topics
-                                        </p>
-                                        <div className="flex flex-wrap gap-1.5">
+                                      <div>
+                                        <div className="flex flex-col gap-1">
                                           {material.topicSummary.topics.map((topic, i) => (
-                                            <span key={i} className="text-xs bg-slate-800 border border-slate-700 text-slate-300 px-2 py-1 rounded">
-                                              {topic}
-                                            </span>
+                                            <div key={i} className="flex items-start gap-2 text-sm py-1 border-b border-slate-800/50 last:border-0">
+                                              <span className="text-indigo-400 text-xs mt-0.5">•</span>
+                                              <span className="text-slate-300">{topic}</span>
+                                            </div>
                                           ))}
                                         </div>
                                       </div>
@@ -1006,7 +981,7 @@ function PreviewContent() {
                       <span className="text-sm">Loading extracted content...</span>
                     </div>
                   ) : fileTextContent ? (
-                    <div>
+                    <div className="p-4">
                       {isContentGarbled && (
                         <div className="mb-4 bg-amber-900/40 border border-amber-500 p-4 rounded">
                           <div>
