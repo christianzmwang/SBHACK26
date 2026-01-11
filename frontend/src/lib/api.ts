@@ -783,6 +783,7 @@ export interface MaterialStructure {
     embeddedChunks: number;
     estimatedClusters: number;
     message: string;
+    topics?: string[];
   } | null;
 }
 

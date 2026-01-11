@@ -265,10 +265,20 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
       if (!hasChapters && materialChunks.length > 0) {
         const embeddedChunks = materialChunks.filter(c => c.embedding).length;
         const estimatedClusters = Math.max(2, Math.ceil(embeddedChunks / 25));
+        
+        // Collect any topics found in chunks even if chapter structure wasn't sufficient
+        const foundTopics = new Set();
+        materialChunks.forEach(chunk => {
+          if (chunk.metadata?.topic) {
+            foundTopics.add(chunk.metadata.topic);
+          }
+        });
+
         topicSummary = {
           totalChunks: materialChunks.length,
           embeddedChunks,
           estimatedClusters,
+          topics: Array.from(foundTopics).sort(),
           message: embeddedChunks > 0 
             ? `Will be grouped into ~${estimatedClusters} natural topic clusters.`
             : 'No embeddings available.'

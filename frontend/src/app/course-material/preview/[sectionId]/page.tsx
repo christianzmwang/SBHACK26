@@ -66,11 +66,17 @@ function PreviewContent() {
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [isUploadingYouTube, setIsUploadingYouTube] = useState(false);
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
+  const [uploadMode, setUploadMode] = useState<'text' | 'file' | 'youtube'>('file');
+  
+  // Paste text state
+  const [pastedText, setPastedText] = useState("");
+  const [isProcessingPaste, setIsProcessingPaste] = useState(false);
   
   // Content structure state
   const [contentStructure, setContentStructure] = useState<ContentStructure | null>(null);
   const [isLoadingStructure, setIsLoadingStructure] = useState(false);
   const [showStructure, setShowStructure] = useState(false);
+  const [viewMode, setViewMode] = useState<'text' | 'structure'>('text');
 
   // Navigate back to the correct folder
   const handleBack = () => {
@@ -451,6 +457,19 @@ function PreviewContent() {
     }
   };
 
+  const handlePasteUpload = async () => {
+    if (!pastedText.trim() || !section) return;
+
+    const file = new File([pastedText], `pasted-text-${Date.now()}.txt`, { type: "text/plain" });
+    setIsProcessingPaste(true);
+    try {
+      await handleFileDrop([file]);
+      setPastedText("");
+    } finally {
+      setIsProcessingPaste(false);
+    }
+  };
+
   if (isLoadingSection) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -493,25 +512,6 @@ function PreviewContent() {
             <p className="text-sm text-slate-400 mt-1">{section.description}</p>
           </div>
           <div className="flex items-center gap-3">
-            {/* Content Structure Button */}
-            <button
-              onClick={() => {
-                if (!contentStructure && !isLoadingStructure) {
-                  loadContentStructure();
-                }
-                setShowStructure(!showStructure);
-              }}
-              className={`flex items-center gap-2 border px-4 py-2 text-sm font-semibold transition cursor-pointer ${
-                showStructure 
-                  ? 'border-indigo-500 bg-indigo-500 text-white' 
-                  : 'border-slate-600 text-slate-300 hover:border-slate-400 hover:text-white'
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-              </svg>
-              Content Structure
-            </button>
             <button
               onClick={handleBack}
               className="flex items-center gap-2 border border-white px-4 py-2 text-sm font-semibold text-white transition hover:bg-white hover:text-black cursor-pointer"
@@ -524,134 +524,10 @@ function PreviewContent() {
           </div>
         </div>
 
-        {/* Content Structure Panel */}
-        {showStructure && (
-          <div className="mb-4 border border-slate-700 bg-slate-900/50 p-4 max-h-[60vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4 sticky top-0 bg-slate-900/95 -mt-4 pt-4 pb-2 -mx-4 px-4">
-              <h3 className="text-sm font-semibold text-white uppercase tracking-wide">
-                Content Structure Analysis
-              </h3>
-              <button
-                onClick={() => setShowStructure(false)}
-                className="text-slate-400 hover:text-white transition"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
+        {/* Content Structure Panel - Removed from here */}
+      </div>
 
-            {isLoadingStructure ? (
-              <div className="flex items-center gap-2 text-slate-400 py-4">
-                <div className="animate-spin h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full" />
-                <span className="text-sm">Analyzing content structure...</span>
-              </div>
-            ) : contentStructure ? (
-              <div className="space-y-6">
-                {/* Overall Summary */}
-                <div className="flex flex-wrap gap-4 text-sm">
-                  <div className="bg-slate-800 px-3 py-2">
-                    <span className="text-slate-400">Materials:</span>
-                    <span className="ml-2 text-white font-medium">{contentStructure.totalMaterials}</span>
-                  </div>
-                  <div className="bg-slate-800 px-3 py-2">
-                    <span className="text-slate-400">Total Chunks:</span>
-                    <span className="ml-2 text-white font-medium">{contentStructure.totalChunks}</span>
-                  </div>
-                  {contentStructure.materialsWithChapters > 0 && (
-                    <div className="bg-slate-800 px-3 py-2">
-                      <span className="text-slate-400">With Chapters:</span>
-                      <span className="ml-2 text-green-400 font-medium">{contentStructure.materialsWithChapters}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Per-Material Structure */}
-                {contentStructure.materials.map((material) => (
-                  <div key={material.id} className="border border-slate-700 bg-slate-800/50">
-                    {/* Material Header */}
-                    <div className="flex items-center justify-between p-3 border-b border-slate-700">
-                      <div className="flex items-center gap-3">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                        <div>
-                          <p className="text-white font-medium">{material.fileName}</p>
-                          <p className="text-xs text-slate-400">{material.totalChunks} chunks</p>
-                        </div>
-                      </div>
-                      <span className={`text-xs font-medium px-2 py-1 ${
-                        material.hasChapters 
-                          ? 'bg-green-900/50 text-green-400 border border-green-700' 
-                          : 'bg-amber-900/50 text-amber-400 border border-amber-700'
-                      }`}>
-                        {material.hasChapters ? `${material.chapters.length} Chapters` : 'Topic Clustering'}
-                      </span>
-                    </div>
-
-                    {/* Material Content */}
-                    <div className="p-3">
-                      {/* Chapters */}
-                      {material.hasChapters && material.chapters.length > 0 && (
-                        <div className="space-y-2">
-                          {material.chapters.map((chapter) => (
-                            <div key={chapter.number} className="bg-slate-800 p-2.5 border border-slate-700">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-indigo-400 font-mono text-xs font-medium">Ch {chapter.number}</span>
-                                  <span className="text-white text-sm">{chapter.title}</span>
-                                </div>
-                                <div className="text-xs text-slate-400">
-                                  {chapter.chunkCount} ({chapter.percentage}%)
-                                </div>
-                              </div>
-                              {chapter.topics.length > 0 && (
-                                <div className="mt-2 flex flex-wrap gap-1">
-                                  {chapter.topics.map((topic, i) => (
-                                    <span key={i} className="text-xs bg-slate-700 text-slate-300 px-1.5 py-0.5">
-                                      {topic}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                              {/* Progress bar */}
-                              <div className="mt-2 h-1 bg-slate-700 overflow-hidden">
-                                <div 
-                                  className="h-full bg-indigo-500 transition-all" 
-                                  style={{ width: `${chapter.percentage}%` }}
-                                />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Topic Summary (for non-chapter content) */}
-                      {!material.hasChapters && material.topicSummary && (
-                        <div className="flex items-start gap-2 text-sm">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                          <p className="text-slate-400">
-                            {material.topicSummary.message}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-
-                {contentStructure.materials.length === 0 && (
-                  <p className="text-sm text-slate-400">No processed materials yet. Upload files to analyze.</p>
-                )}
-              </div>
-            ) : (
-              <p className="text-sm text-slate-400">No content structure available. Upload files to analyze.</p>
-            )}
-          </div>
-        )}
-
-        {/* Error/Upload Progress */}
+      {/* Main Content */}
         {error && (
           <div className="mb-4 bg-red-900/30 border border-red-500 px-4 py-3 text-red-300 flex justify-between items-center">
             <span>{error}</span>
@@ -686,7 +562,6 @@ function PreviewContent() {
             </div>
           </div>
         )}
-      </div>
 
       {/* Main Content */}
       <div className="flex-1 overflow-hidden flex border border-slate-700">
@@ -767,80 +642,153 @@ function PreviewContent() {
 
           {/* Upload More Files */}
           <div className="p-4 border-t border-slate-700">
-            {/* Drag and Drop Zone */}
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`mb-3 border-2 border-dashed px-4 py-6 text-center transition ${
-                isDragging 
-                  ? 'border-indigo-500 bg-indigo-900/20' 
-                  : 'border-slate-600 bg-slate-800/50 hover:border-slate-500'
-              }`}
-            >
-              <svg 
-                xmlns="http://www.w3.org/2000/svg" 
-                className={`h-8 w-8 mx-auto mb-2 transition ${
-                  isDragging ? 'text-indigo-400' : 'text-slate-500'
-                }`} 
-                fill="none" 
-                viewBox="0 0 24 24" 
-                stroke="currentColor"
+            {/* Upload Mode Switcher */}
+            <div className="flex bg-slate-800 p-1 mb-4">
+              <button
+                onClick={() => setUploadMode('text')}
+                className={`flex-1 py-1.5 text-xs font-medium transition cursor-pointer ${
+                  uploadMode === 'text' 
+                    ? 'bg-slate-600 text-white shadow-sm' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-              </svg>
-              <p className={`text-sm font-medium ${isDragging ? 'text-indigo-300' : 'text-slate-400'}`}>
-                {isDragging ? 'Drop files here' : 'Drag and drop files here'}
-              </p>
-              <p className="text-xs text-slate-500 mt-1">
-                PDF, DOCX, DOC, TXT, MD, TEX, MP3
-              </p>
+                Text
+              </button>
+              <button
+                onClick={() => setUploadMode('file')}
+                className={`flex-1 py-1.5 text-xs font-medium transition cursor-pointer ${
+                  uploadMode === 'file' 
+                    ? 'bg-slate-600 text-white shadow-sm' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                File
+              </button>
+              <button
+                onClick={() => setUploadMode('youtube')}
+                className={`flex-1 py-1.5 text-xs font-medium transition cursor-pointer ${
+                  uploadMode === 'youtube' 
+                    ? 'bg-red-900/40 text-red-200 shadow-sm' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                YouTube
+              </button>
             </div>
 
-            {/* Upload Button */}
-            <label className="block">
-              <input
-                type="file"
-                multiple
-                accept=".pdf,.docx,.doc,.txt,.md,.tex,.mp3"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-              <span className="inline-flex w-full cursor-pointer items-center justify-center gap-2 bg-white border border-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-black hover:text-white">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-                Upload Files
-              </span>
-            </label>
+            {/* Paste Text Area */}
+            {uploadMode === 'text' && (
+              <div className="mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                    Paste Text
+                  </span>
+                </div>
+                <textarea
+                  value={pastedText}
+                  onChange={(e) => setPastedText(e.target.value)}
+                  placeholder="Paste text content here..."
+                  className="w-full h-24 bg-slate-800 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none resize-none mb-2"
+                />
+                <button
+                  onClick={handlePasteUpload}
+                  disabled={!pastedText.trim() || isProcessingPaste}
+                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 border border-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isProcessingPaste ? (
+                    <>
+                      <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      Upload Text
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {/* Drag and Drop Zone */}
+            {uploadMode === 'file' && (
+              <>
+                <div
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`mb-3 border-2 border-dashed px-4 py-6 text-center transition ${
+                    isDragging 
+                      ? 'border-indigo-500 bg-indigo-900/20' 
+                      : 'border-slate-600 bg-slate-800/50 hover:border-slate-500'
+                  }`}
+                >
+                  <svg 
+                    xmlns="http://www.w3.org/2000/svg" 
+                    className={`h-8 w-8 mx-auto mb-2 transition ${
+                      isDragging ? 'text-indigo-400' : 'text-slate-500'
+                    }`} 
+                    fill="none" 
+                    viewBox="0 0 24 24" 
+                    stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  <p className={`text-sm font-medium ${isDragging ? 'text-indigo-300' : 'text-slate-400'}`}>
+                    {isDragging ? 'Drop files here' : 'Drag and drop files here'}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    PDF, DOCX, DOC, TXT, MD, TEX, MP3
+                  </p>
+                </div>
+
+                {/* Upload Button */}
+                <label className="block">
+                  <input
+                    type="file"
+                    multiple
+                    accept=".pdf,.docx,.doc,.txt,.md,.tex,.mp3"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                  <span className="inline-flex w-full cursor-pointer items-center justify-center gap-2 bg-white border border-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-black hover:text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Upload Files
+                  </span>
+                </label>
+              </>
+            )}
 
             {/* YouTube URL Section */}
-            <div className="mt-4 pt-4 border-t border-slate-700">
-              <div className="flex items-center gap-2 mb-3">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-red-500" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
-                </svg>
-                <span className="text-sm font-semibold text-slate-400 uppercase tracking-wide">
-                  YouTube Video
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mb-3">
-                Paste a YouTube URL to transcribe the video audio using AI
-              </p>
-              <div className="space-y-2">
-                <input
-                  type="text"
-                  value={youtubeUrl}
-                  onChange={(e) => {
-                    setYoutubeUrl(e.target.value);
-                    setYoutubeError(null);
-                  }}
-                  placeholder="https://youtube.com/watch?v=..."
-                  disabled={isUploadingYouTube}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                />
+            {uploadMode === 'youtube' && (
+              <div className="mt-2">
+                <div className="flex items-center gap-6 mb-4 ml-6">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-red-500" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                  </svg>
+                  <div className="flex-1">
+                    <input
+                      type="text"
+                      value={youtubeUrl}
+                      onChange={(e) => {
+                        setYoutubeUrl(e.target.value);
+                        setYoutubeError(null);
+                      }}
+                      placeholder="https://youtube.com/watch?v=..."
+                      disabled={isUploadingYouTube}
+                      className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                </div>
                 {youtubeError && (
-                  <p className="text-xs text-red-400">{youtubeError}</p>
+                  <p className="text-xs text-red-400 mb-2">{youtubeError}</p>
                 )}
                 <button
                   onClick={handleYouTubeUpload}
@@ -862,7 +810,7 @@ function PreviewContent() {
                   )}
                 </button>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -891,13 +839,168 @@ function PreviewContent() {
               </div>
 
               <div className="border border-slate-700 bg-black">
-                <div className="px-4 py-2 border-b border-slate-700 bg-black">
-                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                    Extracted Text Content
-                  </span>
+                <div className="px-4 py-2 border-b border-slate-700 bg-black flex justify-between items-center">
+                  <div className="flex gap-4">
+                    <button
+                      onClick={() => setViewMode('text')}
+                      className={`text-xs font-semibold uppercase tracking-wide transition cursor-pointer hover:text-slate-300 ${
+                        viewMode === 'text' ? 'text-white' : 'text-slate-400'
+                      }`}
+                    >
+                      Extracted Text
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!contentStructure && !isLoadingStructure) {
+                          loadContentStructure();
+                        }
+                        setViewMode('structure');
+                      }}
+                      className={`text-xs font-semibold uppercase tracking-wide transition cursor-pointer hover:text-slate-300 ${
+                        viewMode === 'structure' ? 'text-white' : 'text-slate-400'
+                      }`}
+                    >
+                      Structure
+                    </button>
+                  </div>
                 </div>
                 <div className="p-4 max-h-[calc(100vh-300px)] overflow-y-auto bg-black">
-                  {isLoadingContent ? (
+                  {viewMode === 'structure' ? (
+                    <div>
+                      {isLoadingStructure ? (
+                        <div className="flex items-center gap-2 text-slate-400 py-4">
+                          <div className="animate-spin h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full" />
+                          <span className="text-sm">Analyzing content structure...</span>
+                        </div>
+                      ) : contentStructure ? (
+                        <div className="space-y-6">
+                          {/* Overall Summary */}
+                          <div className="flex flex-wrap gap-4 text-sm">
+                            <div className="bg-slate-800 px-3 py-2">
+                              <span className="text-slate-400">Materials:</span>
+                              <span className="ml-2 text-white font-medium">{contentStructure.totalMaterials}</span>
+                            </div>
+                            <div className="bg-slate-800 px-3 py-2">
+                              <span className="text-slate-400">Total Chunks:</span>
+                              <span className="ml-2 text-white font-medium">{contentStructure.totalChunks}</span>
+                            </div>
+                            {contentStructure.materialsWithChapters > 0 && (
+                              <div className="bg-slate-800 px-3 py-2">
+                                <span className="text-slate-400">With Chapters:</span>
+                                <span className="ml-2 text-green-400 font-medium">{contentStructure.materialsWithChapters}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Per-Material Structure */}
+                          {contentStructure.materials
+                            .filter(material => 
+                              selectedFile && (
+                                (selectedFile.materialId && material.id === selectedFile.materialId) || 
+                                material.fileName === selectedFile.name
+                              )
+                            )
+                            .map((material) => (
+                            <div key={material.id} className="border border-slate-700 bg-slate-800/50">
+                              {/* Material Header */}
+                              <div className="flex items-center justify-between p-3 border-b border-slate-700">
+                                <div className="flex items-center gap-3">
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                  </svg>
+                                  <div>
+                                    <p className="text-white font-medium">{material.fileName}</p>
+                                    <p className="text-xs text-slate-400">{material.totalChunks} chunks</p>
+                                  </div>
+                                </div>
+                                <span className={`text-xs font-medium px-2 py-1 ${
+                                  material.hasChapters 
+                                    ? 'bg-green-900/50 text-green-400 border border-green-700' 
+                                    : 'bg-amber-900/50 text-amber-400 border border-amber-700'
+                                }`}>
+                                  {material.hasChapters ? `${material.chapters.length} Chapters` : 'Topic Clustering'}
+                                </span>
+                              </div>
+
+                              {/* Material Content */}
+                              <div className="p-3">
+                                {/* Chapters */}
+                                {material.hasChapters && material.chapters.length > 0 && (
+                                  <div className="space-y-2">
+                                    {material.chapters.map((chapter) => (
+                                      <div key={chapter.number} className="bg-slate-800 p-2.5 border border-slate-700">
+                                        <div className="flex items-center justify-between">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-indigo-400 font-mono text-xs font-medium">Ch {chapter.number}</span>
+                                            <span className="text-white text-sm">{chapter.title}</span>
+                                          </div>
+                                          <div className="text-xs text-slate-400">
+                                            {chapter.chunkCount} ({chapter.percentage}%)
+                                          </div>
+                                        </div>
+                                        {chapter.topics.length > 0 && (
+                                          <div className="mt-2 flex flex-wrap gap-1">
+                                            {chapter.topics.map((topic, i) => (
+                                              <span key={i} className="text-xs bg-slate-700 text-slate-300 px-1.5 py-0.5">
+                                                {topic}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                        {/* Progress bar */}
+                                        <div className="mt-2 h-1 bg-slate-700 overflow-hidden">
+                                          <div 
+                                            className="h-full bg-indigo-500 transition-all" 
+                                            style={{ width: `${chapter.percentage}%` }}
+                                          />
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Topic Summary (for non-chapter content) */}
+                                {!material.hasChapters && material.topicSummary && (
+                                  <div className="space-y-3">
+                                    <div className="flex items-start gap-2 text-sm">
+                                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                      </svg>
+                                      <p className="text-slate-400">
+                                        {material.topicSummary.message}
+                                      </p>
+                                    </div>
+                                    
+                                    {/* List identified topics if available */}
+                                    {material.topicSummary.topics && material.topicSummary.topics.length > 0 && (
+                                      <div className="ml-6">
+                                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                                          Identified Topics
+                                        </p>
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {material.topicSummary.topics.map((topic, i) => (
+                                            <span key={i} className="text-xs bg-slate-800 border border-slate-700 text-slate-300 px-2 py-1 rounded">
+                                              {topic}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+
+                          {contentStructure.materials.length === 0 && (
+                            <p className="text-sm text-slate-400">No processed materials yet. Upload files to analyze.</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-slate-400">No content structure available. Upload files to analyze.</p>
+                      )}
+                    </div>
+                  ) : isLoadingContent ? (
                     <div className="flex items-center gap-2 text-slate-400">
                       <div className="animate-spin h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full" />
                       <span className="text-sm">Loading extracted content...</span>
