@@ -189,12 +189,18 @@ export default function VoicePage() {
     try {
       setError(null);
 
-      // Get Deepgram API key from our API route
-      const response = await fetch("/api/deepgram");
+      // Get temporary Deepgram token from our backend
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      const response = await fetch(`${backendUrl}/api/voice/token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
       if (!response.ok) {
-        throw new Error("Failed to get Deepgram API key");
+        throw new Error("Failed to get Deepgram token");
       }
-      const { apiKey } = await response.json();
+      const { access_token } = await response.json();
 
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -217,10 +223,10 @@ export default function VoicePage() {
       isAnalyzingRef.current = true;
       animationFrameRef.current = requestAnimationFrame(analyzeAudio);
 
-      // Connect to Deepgram WebSocket
+      // Connect to Deepgram WebSocket using the temporary token
       const socket = new WebSocket(
         `wss://api.deepgram.com/v1/listen?model=nova-2&language=en-US&smart_format=true&interim_results=true&endpointing=300`,
-        ["token", apiKey]
+        ["token", access_token]
       );
       socketRef.current = socket;
 

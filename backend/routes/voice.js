@@ -156,26 +156,52 @@ Important matching rules:
 
 /**
  * POST /api/voice/token
- * Provide Deepgram API key for client-side WebSocket connection
- * 
- * Note: This returns the API key directly. For production with untrusted clients,
- * consider using Deepgram's scoped keys or proxy the WebSocket through your server.
+ * Generate a temporary Deepgram token for client-side WebSocket connection
+ *
+ * This uses Deepgram's temporary token API to create short-lived tokens
+ * that can only be used for transcription (not API key management).
  */
 router.post('/token', async (req, res) => {
   try {
     const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
-    
+
     if (!deepgramApiKey) {
       console.error('DEEPGRAM_API_KEY is not set in environment variables');
       return res.status(500).json({ error: 'Deepgram API key not configured' });
     }
 
-    // Return the API key for WebSocket authentication
-    // The client will use this with the WebSocket connection
-    res.json({ 
-      access_token: deepgramApiKey,
+    // Request a temporary token from Deepgram
+    // These tokens expire after a set time (default 10 seconds, max 3600 seconds)
+    // and have limited scopes (can only be used for usage, not management)
+    const tokenResponse = await fetch('https://api.deepgram.com/v1/keys', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${deepgramApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        comment: 'Temporary token for voice transcription',
+        scopes: ['usage:write'],
+        time_to_live_in_seconds: 3600, // 1 hour
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const error = await tokenResponse.text();
+      console.error('Failed to generate Deepgram token:', error);
+      return res.status(500).json({
+        error: 'Failed to generate temporary token',
+        details: error
+      });
+    }
+
+    const tokenData = await tokenResponse.json();
+
+    // Return the temporary token
+    res.json({
+      access_token: tokenData.key,
       token_type: 'Token',
-      expires_in: 3600 // Key doesn't expire, but client can refresh hourly
+      expires_in: 3600
     });
   } catch (error) {
     console.error('Error in token endpoint:', error);
