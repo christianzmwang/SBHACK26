@@ -176,12 +176,12 @@ export default function PracticePage() {
     }
   }, [viewMode, materialFolders]);
 
-  // Auto-read first question when entering quiz mode with voice agent open
+  // Auto-read first question/card when entering quiz/flashcard mode with voice agent open
   const prevViewModeRef = useRef<ViewMode>(viewMode);
   useEffect(() => {
     const prevViewMode = prevViewModeRef.current;
     prevViewModeRef.current = viewMode;
-    
+
     // If we just entered quiz mode and voice agent is open, read the first question
     if (viewMode === 'quiz' && prevViewMode !== 'quiz' && isVoiceAgentOpen && !showResults) {
       const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
@@ -195,7 +195,7 @@ export default function PracticePage() {
             const currentQuestion = questions[0];
             if (currentQuestion && voiceAgentRef.current) {
               const questionText = `Question 1 of ${questions.length}. ${currentQuestion.question}`;
-              const answersText = currentQuestion.options 
+              const answersText = currentQuestion.options
                 ? Object.entries(currentQuestion.options).map(([k, v]) => `${k}: ${v}`).join('. ')
                 : '';
               voiceAgentRef.current.speakText(`${questionText} The options are: ${answersText}`);
@@ -204,7 +204,26 @@ export default function PracticePage() {
         }, 500);
       }
     }
-  }, [viewMode, isVoiceAgentOpen, showResults, generatedQuiz, activeQuiz]);
+
+    // If we just entered flashcard mode and voice agent is open, read the first card
+    if (viewMode === 'flashcards' && prevViewMode !== 'flashcards' && isVoiceAgentOpen) {
+      const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+      if (cards.length > 0 && voiceAgentRef.current) {
+        setTimeout(async () => {
+          const setName = generatedFlashcards?.name || activeFlashcardSet?.name || 'your flashcard set';
+          await voiceAgentRef.current?.speakText(`Starting ${setName} with ${cards.length} cards. Let's begin.`);
+          // Then read the first card
+          setTimeout(() => {
+            const currentCard = cards[0];
+            if (currentCard && voiceAgentRef.current) {
+              const frontText = currentCard.front || currentCard.question || '';
+              voiceAgentRef.current.speakText(`Card 1 of ${cards.length}. ${frontText}`);
+            }
+          }, 500);
+        }, 500);
+      }
+    }
+  }, [viewMode, isVoiceAgentOpen, showResults, generatedQuiz, activeQuiz, generatedFlashcards, activeFlashcardSet]);
 
   // Load specific quiz or flashcard set
   const loadQuiz = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
@@ -817,21 +836,82 @@ export default function PracticePage() {
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, [viewMode, showResults, generatedQuiz, activeQuiz, currentQuestionIndex, practiceMode, handleSelectAnswer]);
 
+  // =====================
+  // VOICE FLASHCARD HELPERS (declare before navigation handlers)
+  // =====================
+
+  // Read current flashcard (front or back based on flip state)
+  const readCurrentCard = useCallback(async () => {
+    const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+    const currentCard = cards[currentCardIndex];
+    if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+
+    const cardNumber = currentCardIndex + 1;
+    const totalCards = cards.length;
+
+    if (!isFlipped) {
+      // Read the front of the card
+      const frontText = currentCard.front || currentCard.question || '';
+      const text = `Card ${cardNumber} of ${totalCards}. ${frontText}`;
+      await voiceAgentRef.current.speakText(text);
+    } else {
+      // Read the back of the card
+      const backText = currentCard.back || currentCard.explanation || '';
+      const topicText = currentCard.topic ? ` Topic: ${currentCard.topic}.` : '';
+      const text = `Answer: ${backText}.${topicText}`;
+      await voiceAgentRef.current.speakText(text);
+    }
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isFlipped, isVoiceAgentOpen]);
+
+  // Read just the front of the current card
+  const readCardFront = useCallback(async () => {
+    const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+    const currentCard = cards[currentCardIndex];
+    if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+
+    const frontText = currentCard.front || currentCard.question || '';
+    await voiceAgentRef.current.speakText(frontText);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+
+  // Read just the back of the current card
+  const readCardBack = useCallback(async () => {
+    const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
+    const currentCard = cards[currentCardIndex];
+    if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+
+    const backText = currentCard.back || currentCard.explanation || '';
+    await voiceAgentRef.current.speakText(backText);
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
+
   // Flashcard navigation
-  const handleNextCard = () => {
+  const handleNextCard = useCallback(() => {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     if (currentCardIndex < cards.length - 1) {
       setCurrentCardIndex(prev => prev + 1);
       setIsFlipped(false);
-    }
-  };
 
-  const handlePrevCard = () => {
+      // Auto-read next card if voice agent is open (hands-free mode)
+      if (isVoiceAgentOpen && voiceAgentRef.current) {
+        setTimeout(() => {
+          readCurrentCard();
+        }, 300);
+      }
+    }
+  }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen, readCurrentCard]);
+
+  const handlePrevCard = useCallback(() => {
     if (currentCardIndex > 0) {
       setCurrentCardIndex(prev => prev - 1);
       setIsFlipped(false);
+
+      // Auto-read previous card if voice agent is open (hands-free mode)
+      if (isVoiceAgentOpen && voiceAgentRef.current) {
+        setTimeout(() => {
+          readCurrentCard();
+        }, 300);
+      }
     }
-  };
+  }, [currentCardIndex, isVoiceAgentOpen, readCurrentCard]);
 
   const handleResetFlashcards = () => {
     setGeneratedFlashcards(null);
@@ -963,7 +1043,7 @@ export default function PracticePage() {
   // Move to next unanswered question or submit if all answered (for voice mode)
   const moveToNextOrSubmit = useCallback(async () => {
     const nextUnanswered = findNextUnansweredQuestion(currentQuestionIndex + 1);
-    
+
     if (nextUnanswered === -1) {
       // All questions answered - submit the quiz
       if (voiceAgentRef.current && isVoiceAgentOpen) {
@@ -1334,7 +1414,16 @@ export default function PracticePage() {
 
       case 'FLIP_CARD': {
         if (viewMode === 'flashcards') {
-          setIsFlipped(prev => !prev);
+          setIsFlipped(prev => {
+            const newFlipState = !prev;
+            // Auto-read the card after flipping if voice agent is open
+            if (isVoiceAgentOpen && voiceAgentRef.current) {
+              setTimeout(() => {
+                readCurrentCard();
+              }, 300);
+            }
+            return newFlipState;
+          });
         }
         break;
       }
@@ -1413,6 +1502,13 @@ export default function PracticePage() {
         break;
       }
 
+      case 'REPEAT_CARD': {
+        if (viewMode === 'flashcards') {
+          readCurrentCard();
+        }
+        break;
+      }
+
       default:
         console.log('Unknown voice action:', action);
     }
@@ -1421,7 +1517,8 @@ export default function PracticePage() {
     userId, handleSelectAnswer, handleNextQuestion, handlePrevQuestion,
     handleSubmitQuiz, handleNextCard, handlePrevCard, handleResetQuiz,
     handleResetFlashcards, refreshPracticeOverview, isVoiceAgentOpen,
-    readCurrentQuestion, readAnswersOnly, moveToNextOrSubmit, findNextUnansweredQuestion
+    readCurrentQuestion, readAnswersOnly, moveToNextOrSubmit, findNextUnansweredQuestion,
+    readCurrentCard
   ]);
 
   if (isLoading && !practiceOverview) {

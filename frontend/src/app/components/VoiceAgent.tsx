@@ -13,7 +13,7 @@ interface QuestionResult {
 }
 
 // Voice action types that can be triggered by voice commands
-export type VoiceAction = 
+export type VoiceAction =
   | { type: 'GENERATE_QUIZ'; params: { questionCount?: number; sectionIds?: string[]; folderId?: string; materialName?: string; folderName?: string } }
   | { type: 'ANSWER_QUESTION'; params: { answer: string } }
   | { type: 'NEXT_QUESTION' }
@@ -27,7 +27,8 @@ export type VoiceAction =
   | { type: 'REPEAT_QUESTION' }
   | { type: 'REPEAT_ANSWERS' }
   | { type: 'SKIP_QUESTION' }
-  | { type: 'READ_CURRENT_QUESTION' };
+  | { type: 'READ_CURRENT_QUESTION' }
+  | { type: 'REPEAT_CARD' };
 
 // Expose speakText method to parent via ref
 export interface VoiceAgentRef {
@@ -396,6 +397,8 @@ const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgen
         return { type: 'SKIP_QUESTION' };
       case 'READ_CURRENT_QUESTION':
         return { type: 'READ_CURRENT_QUESTION' };
+      case 'REPEAT_CARD':
+        return { type: 'REPEAT_CARD' };
       default:
         return null;
     }

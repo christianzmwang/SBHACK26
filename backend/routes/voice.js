@@ -52,7 +52,7 @@ AVAILABLE ACTIONS:
 1. GENERATE_QUIZ - User wants to generate/create a quiz or practice questions
 2. ANSWER_QUESTION - User is answering a quiz question (A, B, C, D, or the answer text)
 3. NEXT_QUESTION - User wants to go to the next question
-4. PREV_QUESTION - User wants to go to the previous question  
+4. PREV_QUESTION - User wants to go to the previous question
 5. SUBMIT_QUIZ - User wants to submit/finish the quiz
 6. FLIP_CARD - User wants to flip the flashcard / show the answer
 7. NEXT_CARD - User wants to go to the next flashcard
@@ -61,7 +61,8 @@ AVAILABLE ACTIONS:
 10. REPEAT_QUESTION - User wants to hear the current question read again
 11. REPEAT_ANSWERS - User wants to hear the answer options read again
 12. SKIP_QUESTION - User wants to skip the current question and move to the next
-13. NONE - No specific action detected, just a conversational query
+13. REPEAT_CARD - User wants to hear the current flashcard read again
+14. NONE - No specific action detected, just a conversational query
 
 CURRENT CONTEXT:
 - View Mode: ${context?.viewMode || 'overview'}
@@ -107,14 +108,16 @@ Important matching rules:
 - If user says a number for question count (e.g., "50 questions", "100", "generate 160"), extract it
 - For answers, map common phrases: "first option" → "A", "second" → "B", "third" → "C", "fourth" → "D", "true" → "A", "false" → "B", "option 1" → "A", "option 2" → "B", "option 3" → "C", "option 4" → "D"
 - If context shows we're in a quiz, single letters or option references are likely answers
-- "show answer", "reveal", "flip", "what's the answer" → FLIP_CARD
-- "next", "continue" → NEXT_QUESTION or NEXT_CARD based on context
+- "show answer", "reveal", "flip", "what's the answer", "flip card" → FLIP_CARD (in flashcard context)
+- "next", "continue", "next card" → NEXT_QUESTION or NEXT_CARD based on context
+- "previous card", "go back", "last card" → PREV_CARD (in flashcard context)
+- "repeat", "repeat card", "say that again", "read again", "read card" → REPEAT_CARD (in flashcard context)
 - "skip", "skip question", "skip this one" → SKIP_QUESTION (in quiz context)
 - "back", "previous", "go back" → PREV_QUESTION, PREV_CARD, or EXIT_PRACTICE based on context
 - "done", "finish", "submit", "I'm done" → SUBMIT_QUIZ
 - "exit", "quit", "stop", "leave" → EXIT_PRACTICE
-- "repeat", "repeat question", "say that again", "what was the question", "read question" → REPEAT_QUESTION
-- "read the answers", "what are the options", "read options", "repeat answers" → REPEAT_ANSWERS`;
+- "repeat", "repeat question", "say that again", "what was the question", "read question" → REPEAT_QUESTION (in quiz context)
+- "read the answers", "what are the options", "read options", "repeat answers" → REPEAT_ANSWERS (in quiz context)`;
 
   try {
     const response = await chatCompletion([
