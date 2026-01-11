@@ -62,6 +62,9 @@ function PreviewContent() {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadWarnings, setUploadWarnings] = useState<FileWarning[]>([]);
   const [isContentGarbled, setIsContentGarbled] = useState(false);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [isUploadingYouTube, setIsUploadingYouTube] = useState(false);
+  const [youtubeError, setYoutubeError] = useState<string | null>(null);
 
   // Navigate back to the correct folder
   const handleBack = () => {
@@ -359,6 +362,74 @@ function PreviewContent() {
     }
   };
 
+  const handleYouTubeUpload = async () => {
+    if (!section || !youtubeUrl.trim()) return;
+
+    // Basic URL validation
+    const urlPattern = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|embed\/|shorts\/)|youtu\.be\/)/;
+    if (!urlPattern.test(youtubeUrl.trim())) {
+      setYoutubeError('Please enter a valid YouTube URL');
+      return;
+    }
+
+    // Create temporary file item with processing status
+    const tempId = `temp-youtube-${Date.now()}`;
+    const tempFile: FileItem = {
+      id: tempId,
+      name: 'YouTube Video (Processing...)',
+      uploadDate: new Date().toISOString(),
+      size: '—',
+      processing: true,
+    };
+
+    const sectionId = section.id;
+
+    // Add temp file to the list immediately
+    setSection((prev) => 
+      prev ? { ...prev, files: [...prev.files, tempFile] } : null
+    );
+
+    setIsUploadingYouTube(true);
+    setYoutubeError(null);
+
+    try {
+      const { file: uploadedFile, warning } = await foldersApi.uploadYouTubeUrl(
+        sectionId,
+        youtubeUrl.trim()
+      );
+
+      // Replace temporary file with actual uploaded file
+      setSection((prev) => {
+        if (!prev) return null;
+        const remainingFiles = prev.files.filter(f => f.id !== tempId);
+        return { ...prev, files: [...remainingFiles, uploadedFile] };
+      });
+
+      // Auto-select the uploaded file
+      setSelectedFile(uploadedFile);
+
+      // Show any warnings
+      if (warning) {
+        setUploadWarnings([{
+          fileName: uploadedFile.name,
+          ...warning
+        }]);
+      }
+
+      // Clear the input
+      setYoutubeUrl('');
+    } catch (err) {
+      // Remove temp file on error
+      setSection((prev) => {
+        if (!prev) return null;
+        return { ...prev, files: prev.files.filter(f => f.id !== tempId) };
+      });
+      setYoutubeError(err instanceof Error ? err.message : 'Failed to transcribe YouTube video');
+    } finally {
+      setIsUploadingYouTube(false);
+    }
+  };
+
   if (isLoadingSection) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -573,6 +644,56 @@ function PreviewContent() {
                 Upload Files
               </span>
             </label>
+
+            {/* YouTube URL Section */}
+            <div className="mt-4 pt-4 border-t border-slate-700">
+              <div className="flex items-center gap-2 mb-3">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-red-500" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                </svg>
+                <span className="text-sm font-semibold text-slate-400 uppercase tracking-wide">
+                  YouTube Video
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mb-3">
+                Paste a YouTube URL to transcribe the video audio using AI
+              </p>
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={youtubeUrl}
+                  onChange={(e) => {
+                    setYoutubeUrl(e.target.value);
+                    setYoutubeError(null);
+                  }}
+                  placeholder="https://youtube.com/watch?v=..."
+                  disabled={isUploadingYouTube}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                {youtubeError && (
+                  <p className="text-xs text-red-400">{youtubeError}</p>
+                )}
+                <button
+                  onClick={handleYouTubeUpload}
+                  disabled={!youtubeUrl.trim() || isUploadingYouTube}
+                  className="w-full flex items-center justify-center gap-2 bg-red-600 border border-red-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isUploadingYouTube ? (
+                    <>
+                      <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                      Transcribing...
+                    </>
+                  ) : (
+                    <>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                      </svg>
+                      Transcribe Video
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 

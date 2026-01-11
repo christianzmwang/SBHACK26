@@ -38,11 +38,13 @@ export const processAndStoreDocuments = async (files, metadata) => {
         error: error.message
       });
     } finally {
-      // Clean up temp file
-      try {
-        await fs.unlink(file.path);
-      } catch (e) {
-        // Ignore cleanup errors
+      // Clean up temp file (only if path exists)
+      if (file.path) {
+        try {
+          await fs.unlink(file.path);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
       }
     }
   }
@@ -54,17 +56,24 @@ export const processAndStoreDocuments = async (files, metadata) => {
  * Process a single document
  */
 const processDocument = async (file, metadata) => {
-  const { type, title } = metadata;
+  const { type, title, textContent } = metadata;
 
-  // Step 1: Extract text from document
+  // Step 1: Extract text from document (or use pre-extracted content for YouTube, etc.)
   console.log(`Extracting text from ${file.originalname}...`);
   let extractedText;
-  try {
-    extractedText = await extractText(file);
-  } catch (extractError) {
-    console.error(`[ProcessDocument] Extraction failed for ${file.originalname}:`, extractError.message);
-    // Re-throw with more context for debugging
-    throw new Error(`Failed to extract text from ${file.originalname}: ${extractError.message}`);
+  
+  // If textContent is provided in metadata (e.g., from YouTube transcription), use it directly
+  if (textContent && typeof textContent === 'string' && textContent.trim().length > 0) {
+    console.log(`[ProcessDocument] Using pre-extracted text content (${textContent.length} chars)`);
+    extractedText = textContent;
+  } else {
+    try {
+      extractedText = await extractText(file);
+    } catch (extractError) {
+      console.error(`[ProcessDocument] Extraction failed for ${file.originalname}:`, extractError.message);
+      // Re-throw with more context for debugging
+      throw new Error(`Failed to extract text from ${file.originalname}: ${extractError.message}`);
+    }
   }
 
   if (!extractedText || extractedText.trim().length === 0) {
