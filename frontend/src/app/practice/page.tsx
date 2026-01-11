@@ -2025,7 +2025,7 @@ export default function PracticePage() {
 
     if (showResults) {
       return (
-        <div className="h-full overflow-auto -mt-4">
+        <div className={`h-full overflow-auto -mt-4 transition-all duration-300 ${isVoiceAgentOpen ? 'mr-[400px]' : ''}`}>
           {/* Voice Agent Button - Overlaid on bottom nav */}
           <button
             onClick={() => setIsVoiceAgentOpen(true)}
@@ -2149,11 +2149,11 @@ export default function PracticePage() {
     };
 
     return (
-      <div className="flex flex-col overflow-hidden">
+      <div className={`flex flex-col overflow-hidden transition-all duration-300 ${isVoiceAgentOpen ? 'mr-[400px]' : ''}`}>
         {/* Voice Agent Button - Overlaid on bottom nav */}
         <button
           onClick={() => setIsVoiceAgentOpen(true)}
-          className="fixed bottom-4 right-6 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
+          className={`fixed bottom-4 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group ${isVoiceAgentOpen ? 'right-[424px]' : 'right-6'}`}
           aria-label="Open voice assistant"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2388,11 +2388,11 @@ export default function PracticePage() {
     }
 
     return (
-      <div className="h-full overflow-auto -mt-4">
+      <div className={`h-full overflow-auto -mt-4 transition-all duration-300 ${isVoiceAgentOpen ? 'mr-[400px]' : ''}`}>
         {/* Voice Agent Button - Overlaid on bottom nav */}
         <button
           onClick={() => setIsVoiceAgentOpen(true)}
-          className="fixed bottom-4 right-6 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
+          className={`fixed bottom-4 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group ${isVoiceAgentOpen ? 'right-[424px]' : 'right-6'}`}
           aria-label="Open voice assistant"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">

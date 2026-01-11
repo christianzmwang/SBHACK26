@@ -686,8 +686,7 @@ const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgen
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="relative w-full max-w-2xl max-h-[90vh] bg-slate-900 border border-slate-700 shadow-2xl flex flex-col">
+    <div className="fixed inset-y-0 right-0 z-50 w-[400px] bg-slate-900 border-l border-slate-700 shadow-2xl flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700 bg-slate-800">
           <div className="flex items-center gap-3">
@@ -888,7 +887,6 @@ const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgen
             </div>
           </div>
         </div>
-      </div>
     </div>
   );
 });
