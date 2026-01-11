@@ -108,6 +108,7 @@ export default function PracticePage() {
   const voiceAgentRef = useRef<VoiceAgentRef>(null);
   const shouldAutoReadQuestionRef = useRef(false);
   const shouldAutoReadCardRef = useRef(false);
+  const shouldAutoAdvanceRef = useRef(false);
 
   // Question overview modal state
   const [showQuestionOverview, setShowQuestionOverview] = useState(false);
@@ -270,6 +271,45 @@ export default function PracticePage() {
       }
     }
   }, [currentCardIndex, isFlipped, isVoiceAgentOpen, viewMode, generatedFlashcards, activeFlashcardSet]);
+
+  // Auto-advance to next question after answer is recorded (for hands-free mode)
+  useEffect(() => {
+    if (shouldAutoAdvanceRef.current && viewMode === 'quiz' && !showResults) {
+      shouldAutoAdvanceRef.current = false;
+
+      const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+      const nextUnanswered = questions.findIndex((q, idx) => {
+        const questionId = q.id ? String(q.id) : `q-${idx}`;
+        const answer = selectedAnswers[questionId];
+        return (answer === undefined || answer === null || answer === '') && idx > currentQuestionIndex;
+      });
+
+      // If no unanswered questions after current, check from beginning
+      let finalNextUnanswered = nextUnanswered;
+      if (nextUnanswered === -1) {
+        finalNextUnanswered = questions.findIndex((q, idx) => {
+          const questionId = q.id ? String(q.id) : `q-${idx}`;
+          const answer = selectedAnswers[questionId];
+          return answer === undefined || answer === null || answer === '';
+        });
+      }
+
+      if (finalNextUnanswered === -1) {
+        // All questions answered - submit the quiz
+        if (voiceAgentRef.current && isVoiceAgentOpen) {
+          voiceAgentRef.current.speakText("All questions answered. Submitting your quiz.").then(() => {
+            handleSubmitQuiz();
+          });
+        } else {
+          handleSubmitQuiz();
+        }
+      } else {
+        // Move to next unanswered question and flag for auto-read
+        shouldAutoReadQuestionRef.current = true;
+        setCurrentQuestionIndex(finalNextUnanswered);
+      }
+    }
+  }, [selectedAnswers, viewMode, showResults, currentQuestionIndex, generatedQuiz, activeQuiz, isVoiceAgentOpen, handleSubmitQuiz]);
 
   // Load specific quiz or flashcard set
   const loadQuiz = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
@@ -1470,18 +1510,19 @@ export default function PracticePage() {
           if (currentQuestion) {
             const questionId = currentQuestion.id ? String(currentQuestion.id) : `q-${currentQuestionIndex}`;
             const answer = action.params.answer.toUpperCase();
-            
+
             // Validate the answer is valid (A, B, C, D)
             if (['A', 'B', 'C', 'D'].includes(answer)) {
               handleSelectAnswer(questionId, answer);
-              
-              // Announce the selection and auto-advance after a short delay
+
+              // Flag for auto-advance after answer is recorded
+              // The effect will trigger once selectedAnswers updates
+              shouldAutoAdvanceRef.current = true;
+
+              // Optional: Announce the selection
               if (voiceAgentRef.current && isVoiceAgentOpen) {
                 const optionText = currentQuestion.options?.[answer as keyof typeof currentQuestion.options] || answer;
-                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`).then(() => {
-                  // After speaking, move to next unanswered or submit
-                  moveToNextOrSubmit();
-                });
+                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`);
               }
             }
           }
