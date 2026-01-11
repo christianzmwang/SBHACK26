@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import VoiceNavbar, { type VoiceAction, type VoiceNavbarRef } from "@/app/components/VoiceNavbar";
@@ -48,7 +48,7 @@ interface SelectableItem {
   parentFolderId?: string;
 }
 
-export default function PracticePage() {
+function PracticePageContent() {
   const { data: session } = useSession();
   const searchParams = useSearchParams();
   const { 
@@ -4312,5 +4312,13 @@ export default function PracticePage() {
 
 
     </div>
+  );
+}
+
+export default function PracticePage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-screen">Loading...</div>}>
+      <PracticePageContent />
+    </Suspense>
   );
 }
