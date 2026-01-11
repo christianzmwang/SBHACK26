@@ -101,7 +101,9 @@ export default function Taskbar() {
     <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-slate-800 bg-black">
       <div className="flex items-stretch justify-around">
         {navItems.map((item) => {
-          const isActive = pathname === item.href;
+          const isActive = item.href === '/' 
+            ? pathname === '/' 
+            : pathname?.startsWith(item.href);
           return (
             <Link
               key={item.href}

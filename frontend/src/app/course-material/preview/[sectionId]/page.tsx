@@ -696,11 +696,11 @@ function PreviewContent() {
                 <button
                   onClick={handlePasteUpload}
                   disabled={!pastedText.trim() || isProcessingPaste}
-                  className="w-full flex items-center justify-center gap-2 bg-indigo-600 border border-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  className="w-full flex items-center justify-center gap-2 bg-white border border-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-black hover:text-white disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   {isProcessingPaste ? (
                     <>
-                      <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                      <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
                       Processing...
                     </>
                   ) : (
@@ -793,11 +793,11 @@ function PreviewContent() {
                 <button
                   onClick={handleYouTubeUpload}
                   disabled={!youtubeUrl.trim() || isUploadingYouTube}
-                  className="w-full flex items-center justify-center gap-2 bg-red-600 border border-red-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  className="w-full flex items-center justify-center gap-2 bg-white border border-white px-4 py-3 text-sm font-semibold text-black transition hover:bg-black hover:text-white disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   {isUploadingYouTube ? (
                     <>
-                      <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+                      <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
                       Transcribing...
                     </>
                   ) : (
@@ -895,12 +895,8 @@ function PreviewContent() {
                                     <p className="text-xs text-slate-400">{material.totalChunks} chunks</p>
                                   </div>
                                 </div>
-                                <span className={`text-xs font-medium px-2 py-1 ${
-                                  material.hasChapters 
-                                    ? 'bg-green-900/50 text-green-400 border border-green-700' 
-                                    : 'bg-amber-900/50 text-amber-400 border border-amber-700'
-                                }`}>
-                                  {material.hasChapters ? `${material.chapters.length} Chapters` : 'Topic Clustering'}
+                                <span className="text-xs font-medium px-2 py-1 text-slate-400">
+                                  {material.hasChapters ? `${material.chapters.length} Chapters` : `${material.topicSummary?.topics?.length || 0} Topics`}
                                 </span>
                               </div>
 
@@ -917,9 +913,13 @@ function PreviewContent() {
                                               <span className={`font-mono text-xs font-medium min-w-[3rem] ${chapter.isGeneratedTopic ? 'text-amber-400' : 'text-indigo-400'}`}>
                                                 {chapter.isGeneratedTopic ? `Topic ${chapter.number}` : `Ch ${chapter.number}`}
                                               </span>
-                                              <span className="text-white text-sm font-medium">{chapter.title}</span>
+                                              <span className="text-white text-sm font-medium">
+                                                {chapter.isGeneratedTopic && chapter.title === `Topic ${chapter.number}` && chapter.description 
+                                                  ? chapter.description 
+                                                  : chapter.title}
+                                              </span>
                                             </div>
-                                            {chapter.description && (
+                                            {chapter.description && (!chapter.isGeneratedTopic || chapter.title !== `Topic ${chapter.number}`) && (
                                               <p className="text-xs text-slate-400 ml-[3.5rem] mb-1 line-clamp-2">
                                                 {chapter.description}
                                               </p>
@@ -985,7 +985,7 @@ function PreviewContent() {
                       )}
                     </div>
                   ) : isLoadingContent ? (
-                    <div className="flex items-center gap-2 text-slate-400">
+                    <div className="flex items-center gap-2 text-slate-400 p-4">
                       <div className="animate-spin h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full" />
                       <span className="text-sm">Loading extracted content...</span>
                     </div>
