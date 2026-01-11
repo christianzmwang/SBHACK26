@@ -617,20 +617,49 @@ export default function PracticePage() {
         return;
       }
 
-      // Generate as quiz (can be practiced in any mode)
-      setGenerationStatus('Starting generation...');
-      const quiz = await practiceApi.generateQuiz({
+      // Generate ALL 3 types for the practice set
+      const baseName = practiceNameInput || `Practice Set - ${new Date().toISOString().split('T')[0]}`;
+      
+      // 1. Generate Multiple Choice questions
+      setGenerationStatus('Generating Multiple Choice questions...');
+      const mcQuiz = await practiceApi.generateQuiz({
         sectionIds,
         userId,
         questionCount: parsedSetSize,
         questionType: 'multiple_choice',
         difficulty: 'mixed',
-        name: practiceNameInput || undefined,
+        name: `${baseName} (Multiple Choice)`,
         folderId: saveToPracticeFolder || undefined,
-        onProgress: (msg) => setGenerationStatus(msg),
+        onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
       });
+      
+      // 2. Generate True/False questions
+      setGenerationStatus('Generating True/False questions...');
+      const tfQuiz = await practiceApi.generateQuiz({
+        sectionIds,
+        userId,
+        questionCount: parsedSetSize,
+        questionType: 'true_false',
+        difficulty: 'mixed',
+        name: `${baseName} (True/False)`,
+        folderId: saveToPracticeFolder || undefined,
+        onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
+      });
+      
+      // 3. Generate Flashcards
+      setGenerationStatus('Generating Flashcards...');
+      const flashcardSet = await practiceApi.generateFlashcards({
+        sectionIds,
+        userId,
+        count: parsedSetSize,
+        name: `${baseName} (Flashcards)`,
+        folderId: saveToPracticeFolder || undefined,
+      });
+      
       setGenerationStatus('');
-      setGeneratedQuiz(quiz);
+      
+      // Start with multiple choice quiz view
+      setGeneratedQuiz(mcQuiz);
       setGeneratedFlashcards(null);
       setCurrentQuestionIndex(0);
       setSelectedAnswers({});
@@ -638,7 +667,8 @@ export default function PracticePage() {
       setQuizStartTime(Date.now());
       setPracticeMode('multiple_choice');
       setViewMode('quiz');
-      // Refresh overview to show new practice set
+      
+      // Refresh overview to show all new practice sets
       refreshPracticeOverview();
       
     } catch (err) {
@@ -1332,22 +1362,49 @@ export default function PracticePage() {
           // Trigger generation with the provided section IDs
           setIsGenerating(true);
           setError(null);
-          setGenerationStatus('Starting voice-initiated generation...');
+          
+          const baseName = materialName || folderName || `Practice Set - ${new Date().toISOString().split('T')[0]}`;
           
           try {
-            const quiz = await practiceApi.generateQuiz({
+            // Generate ALL 3 types for the practice set
+            // 1. Multiple Choice
+            setGenerationStatus('Generating Multiple Choice questions...');
+            const mcQuiz = await practiceApi.generateQuiz({
               sectionIds,
               userId: userId!,
               questionCount: parsedCount,
               questionType: 'multiple_choice',
               difficulty: 'mixed',
-              name: materialName || folderName || undefined,
+              name: `${baseName} (Multiple Choice)`,
               folderId: folderId || undefined,
-              onProgress: (msg) => setGenerationStatus(msg),
+              onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
+            });
+            
+            // 2. True/False
+            setGenerationStatus('Generating True/False questions...');
+            await practiceApi.generateQuiz({
+              sectionIds,
+              userId: userId!,
+              questionCount: parsedCount,
+              questionType: 'true_false',
+              difficulty: 'mixed',
+              name: `${baseName} (True/False)`,
+              folderId: folderId || undefined,
+              onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
+            });
+            
+            // 3. Flashcards
+            setGenerationStatus('Generating Flashcards...');
+            await practiceApi.generateFlashcards({
+              sectionIds,
+              userId: userId!,
+              count: parsedCount,
+              name: `${baseName} (Flashcards)`,
+              folderId: folderId || undefined,
             });
             
             setGenerationStatus('');
-            setGeneratedQuiz(quiz);
+            setGeneratedQuiz(mcQuiz);
             setGeneratedFlashcards(null);
             setCurrentQuestionIndex(0);
             setSelectedAnswers({});
@@ -1542,14 +1599,18 @@ export default function PracticePage() {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
     const quizName = generatedQuiz?.name || activeQuiz?.name || 'Practice Set';
     
-    // For True/False mode, convert questions
+    // For True/False mode, ensure proper options and answer mapping
+    // Backend generates true/false questions with correct_answer as "true" or "false"
     const displayQuestions = practiceMode === 'true_false' 
-      ? questions.map(q => ({
-          ...q,
-          options: { A: 'True', B: 'False' } as Record<string, string>,
-          // Map original answer to True/False
-          correct_answer: (String(q.correct_answer || q.correctAnswer).toLowerCase() === 'true' || q.correct_answer === 'A' || q.correctAnswer === 'A') ? 'A' : 'B'
-        }))
+      ? questions.map(q => {
+          const answer = String(q.correct_answer || q.correctAnswer || '').toLowerCase();
+          return {
+            ...q,
+            options: { A: 'True', B: 'False' } as Record<string, string>,
+            // Map "true"/"false" answer to "A"/"B" for display
+            correct_answer: answer === 'true' ? 'A' : answer === 'false' ? 'B' : (answer === 'a' ? 'A' : 'B')
+          };
+        })
       : questions;
     
     const currentQuestion = displayQuestions[currentQuestionIndex];
@@ -2149,24 +2210,33 @@ export default function PracticePage() {
               </select>
             </div>
 
-            {/* Practice modes info */}
+            {/* What will be generated */}
             <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">Practice Modes</h3>
+              <h3 className="text-sm font-semibold text-white mb-3">What Will Be Generated</h3>
               <div className="space-y-2 text-sm text-slate-400">
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
-                  <span>Multiple Choice</span>
+                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="text-blue-400">Multiple Choice</span>
+                  <span className="text-slate-500">questions</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-green-400 rounded-full"></span>
-                  <span>True/False</span>
+                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="text-green-400">True/False</span>
+                  <span className="text-slate-500">statements</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-purple-400 rounded-full"></span>
-                  <span>Flashcards</span>
+                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="text-purple-400">Flashcards</span>
+                  <span className="text-slate-500">for review</span>
                 </div>
               </div>
-              <p className="text-slate-500 text-xs mt-3">Choose your mode when practicing</p>
+              <p className="text-slate-500 text-xs mt-3">All 3 types will be created for your practice set</p>
             </div>
 
             {/* Generate button */}
@@ -2195,8 +2265,8 @@ export default function PracticePage() {
               <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
                 <p className="font-medium mb-1">🎯 {generationStatus || 'Generating your practice set...'}</p>
                 <p className="text-xs text-indigo-300/80">
-                  Our AI is analyzing your materials and creating questions. This typically takes 1-3 minutes for standard quizzes.
-                  For large content selections, it may take up to 5 minutes.
+                  Creating Multiple Choice, True/False, and Flashcards. This typically takes 2-5 minutes.
+                  For large content selections, it may take longer.
                 </p>
               </div>
             )}

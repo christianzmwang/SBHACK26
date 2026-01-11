@@ -426,6 +426,8 @@ const extractDocumentStructure = (text) => {
   }
 
   // If no chapters found, create a single "virtual" chapter
+  /* 
+  // Disabled "Main Content" fallback to allow topic clustering in quiz generator
   if (chapters.length === 0) {
     chapters.push({
       number: 1,
@@ -436,6 +438,7 @@ const extractDocumentStructure = (text) => {
       chunkCount: 0
     });
   }
+  */
 
   return {
     chapters,

@@ -125,7 +125,7 @@ const groupChunksByChapter = (chunks) => {
     const chapterNum = chunk.metadata?.chapter;
     const chapterTitle = chunk.metadata?.chapterTitle || `Chapter ${chapterNum}`;
     
-    if (chapterNum) {
+    if (chapterNum && chapterTitle !== 'Main Content') {
       const key = `${chunk.material_id}_ch${chapterNum}`;
       if (!chapterGroups.has(key)) {
         chapterGroups.set(key, {
@@ -147,9 +147,11 @@ const groupChunksByChapter = (chunks) => {
   
   // If we have ungrouped chunks, add them as a "General" group
   if (noChapter.length > 0) {
-    // If most chunks have no chapter, use topic clustering instead
-    if (noChapter.length > chunks.length * 0.7) {
-      return null; // Signal to use topic clustering instead
+    // If half or more chunks have no chapter, use topic clustering instead
+    // Lowered threshold from 0.7 to 0.5 to be more aggressive about clustering unstructured content
+    if (noChapter.length >= chunks.length * 0.5) {
+      console.log(`[Group] ${noChapter.length}/${chunks.length} chunks are unstructured. Falling back to topic clustering.`);
+      return null;
     }
     groups.push({
       chapterNum: 0,
@@ -157,6 +159,14 @@ const groupChunksByChapter = (chunks) => {
       materialId: null,
       chunks: noChapter
     });
+  }
+
+  // Check for dominant chapter (e.g. one chapter has > 60% content)
+  // This indicates a likely false positive or a single-chapter document where clustering is better
+  const totalChunks = chunks.length;
+  if (groups.some(g => g.chunks.length > totalChunks * 0.6)) {
+     console.log(`[Group] Dominant chapter detected (>60% content). Falling back to topic clustering.`);
+     return null;
   }
 
   return groups;
@@ -968,6 +978,7 @@ export const generateFlashcardsFromSections = async (options) => {
   let generationGroups;
   let useChapterMode = false;
 
+  // Added explicit null check as groupChunksByChapter returns null for clustering fallback
   if (chapterGroups && chapterGroups.length > 1) {
     useChapterMode = true;
     generationGroups = calculateChapterDistribution(chapterGroups, count);
@@ -1147,11 +1158,12 @@ const storeQuiz = async (options) => {
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i];
 
-      await client.query(
+      const qResult = await client.query(
         `INSERT INTO questions 
          (quiz_set_id, question_index, question, question_type, options, correct_answer, 
           explanation, difficulty, topic, chapter, source_chunk_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id`,
         [
           quizId,
           i,
@@ -1166,6 +1178,9 @@ const storeQuiz = async (options) => {
           q.sourceChunkIds || []
         ]
       );
+      
+      // Assign the generated ID back to the question object so it's returned to frontend
+      q.id = qResult.rows[0].id;
     }
 
     return quizId;
@@ -1189,11 +1204,14 @@ const storeFlashcards = async (options) => {
     const setId = setResult.rows[0].id;
 
     for (const card of flashcards) {
-      await client.query(
+      const cardResult = await client.query(
         `INSERT INTO flashcards (flashcard_set_id, front, back, topic, chapter)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
         [setId, card.front || card.question, card.back || card.explanation, card.topic, card.chapter]
       );
+      
+      card.id = cardResult.rows[0].id;
     }
 
     return setId;
