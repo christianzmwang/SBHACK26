@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
-import VoiceAgent, { type VoiceAction } from "@/app/components/VoiceAgent";
+import VoiceAgent, { type VoiceAction, type VoiceAgentRef } from "@/app/components/VoiceAgent";
 import { useData } from "@/app/context/DataContext";
 import {
   foldersApi,
@@ -105,6 +105,7 @@ export default function PracticePage() {
 
   // Voice Agent state
   const [isVoiceAgentOpen, setIsVoiceAgentOpen] = useState(false);
+  const voiceAgentRef = useRef<VoiceAgentRef>(null);
 
   // Question overview modal state
   const [showQuestionOverview, setShowQuestionOverview] = useState(false);
@@ -175,7 +176,35 @@ export default function PracticePage() {
     }
   }, [viewMode, materialFolders]);
 
-
+  // Auto-read first question when entering quiz mode with voice agent open
+  const prevViewModeRef = useRef<ViewMode>(viewMode);
+  useEffect(() => {
+    const prevViewMode = prevViewModeRef.current;
+    prevViewModeRef.current = viewMode;
+    
+    // If we just entered quiz mode and voice agent is open, read the first question
+    if (viewMode === 'quiz' && prevViewMode !== 'quiz' && isVoiceAgentOpen && !showResults) {
+      const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+      if (questions.length > 0 && voiceAgentRef.current) {
+        // Small delay to let the UI settle
+        setTimeout(async () => {
+          const quizName = generatedQuiz?.name || activeQuiz?.name || 'your quiz';
+          await voiceAgentRef.current?.speakText(`Starting ${quizName} with ${questions.length} questions. Let's begin.`);
+          // Then read the first question
+          setTimeout(() => {
+            const currentQuestion = questions[0];
+            if (currentQuestion && voiceAgentRef.current) {
+              const questionText = `Question 1 of ${questions.length}. ${currentQuestion.question}`;
+              const answersText = currentQuestion.options 
+                ? Object.entries(currentQuestion.options).map(([k, v]) => `${k}: ${v}`).join('. ')
+                : '';
+              voiceAgentRef.current.speakText(`${questionText} The options are: ${answersText}`);
+            }
+          }, 500);
+        }, 500);
+      }
+    }
+  }, [viewMode, isVoiceAgentOpen, showResults, generatedQuiz, activeQuiz]);
 
   // Load specific quiz or flashcard set
   const loadQuiz = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
@@ -841,6 +870,116 @@ export default function PracticePage() {
     };
   };
 
+  // =====================
+  // VOICE QUIZ HELPERS
+  // =====================
+  
+  // Format question text for voice reading
+  const formatQuestionForVoice = useCallback((question: Question, questionNumber: number, totalQuestions: number): string => {
+    let text = `Question ${questionNumber} of ${totalQuestions}. ${question.question}`;
+    return text;
+  }, []);
+
+  // Format answer options for voice reading
+  const formatAnswersForVoice = useCallback((question: Question): string => {
+    if (!question.options) return '';
+    const optionTexts = Object.entries(question.options)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('. ');
+    return `The options are: ${optionTexts}`;
+  }, []);
+
+  // Read current question and answers aloud
+  const readCurrentQuestion = useCallback(async () => {
+    const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+    const currentQuestion = questions[currentQuestionIndex];
+    if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    
+    const questionText = formatQuestionForVoice(currentQuestion, currentQuestionIndex + 1, questions.length);
+    const answersText = formatAnswersForVoice(currentQuestion);
+    const fullText = `${questionText} ${answersText}`;
+    
+    await voiceAgentRef.current.speakText(fullText);
+  }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatQuestionForVoice, formatAnswersForVoice]);
+
+  // Read just the question
+  const readQuestionOnly = useCallback(async () => {
+    const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+    const currentQuestion = questions[currentQuestionIndex];
+    if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    
+    const questionText = formatQuestionForVoice(currentQuestion, currentQuestionIndex + 1, questions.length);
+    await voiceAgentRef.current.speakText(questionText);
+  }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatQuestionForVoice]);
+
+  // Read just the answers
+  const readAnswersOnly = useCallback(async () => {
+    const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+    const currentQuestion = questions[currentQuestionIndex];
+    if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+    
+    const answersText = formatAnswersForVoice(currentQuestion);
+    await voiceAgentRef.current.speakText(answersText);
+  }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatAnswersForVoice]);
+
+  // Find next unanswered question index (returns -1 if all answered)
+  const findNextUnansweredQuestion = useCallback((startIndex: number): number => {
+    const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+    const totalQuestions = questions.length;
+    
+    // Search from startIndex to end
+    for (let i = startIndex; i < totalQuestions; i++) {
+      const q = questions[i];
+      const questionId = q.id ? String(q.id) : `q-${i}`;
+      const answer = selectedAnswers[questionId];
+      if (answer === undefined || answer === null || answer === '') {
+        return i;
+      }
+    }
+    
+    // Wrap around and search from 0 to startIndex
+    for (let i = 0; i < startIndex; i++) {
+      const q = questions[i];
+      const questionId = q.id ? String(q.id) : `q-${i}`;
+      const answer = selectedAnswers[questionId];
+      if (answer === undefined || answer === null || answer === '') {
+        return i;
+      }
+    }
+    
+    return -1; // All questions answered
+  }, [generatedQuiz, activeQuiz, selectedAnswers]);
+
+  // Check if all questions are answered
+  const areAllQuestionsAnswered = useCallback((): boolean => {
+    const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+    return questions.every((q, idx) => {
+      const questionId = q.id ? String(q.id) : `q-${idx}`;
+      const answer = selectedAnswers[questionId];
+      return answer !== undefined && answer !== null && answer !== '';
+    });
+  }, [generatedQuiz, activeQuiz, selectedAnswers]);
+
+  // Move to next unanswered question or submit if all answered (for voice mode)
+  const moveToNextOrSubmit = useCallback(async () => {
+    const nextUnanswered = findNextUnansweredQuestion(currentQuestionIndex + 1);
+    
+    if (nextUnanswered === -1) {
+      // All questions answered - submit the quiz
+      if (voiceAgentRef.current && isVoiceAgentOpen) {
+        await voiceAgentRef.current.speakText("All questions answered. Submitting your quiz.");
+      }
+      handleSubmitQuiz();
+    } else {
+      // Move to next unanswered question
+      setCurrentQuestionIndex(nextUnanswered);
+      // Read the question after a short delay to allow state to update
+      setTimeout(() => {
+        readCurrentQuestion();
+      }, 300);
+    }
+  }, [findNextUnansweredQuestion, currentQuestionIndex, isVoiceAgentOpen, handleSubmitQuiz, readCurrentQuestion]);
+
   // Render folder tree item for generation
   const renderFolderTree = (folder: Folder, depth = 0) => {
     const isSelected = isFolderSelected(folder.id);
@@ -1155,6 +1294,15 @@ export default function PracticePage() {
             // Validate the answer is valid (A, B, C, D)
             if (['A', 'B', 'C', 'D'].includes(answer)) {
               handleSelectAnswer(questionId, answer);
+              
+              // Announce the selection and auto-advance after a short delay
+              if (voiceAgentRef.current && isVoiceAgentOpen) {
+                const optionText = currentQuestion.options?.[answer as keyof typeof currentQuestion.options] || answer;
+                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`).then(() => {
+                  // After speaking, move to next unanswered or submit
+                  moveToNextOrSubmit();
+                });
+              }
             }
           }
         }
@@ -1164,6 +1312,8 @@ export default function PracticePage() {
       case 'NEXT_QUESTION': {
         if (viewMode === 'quiz' && !showResults) {
           handleNextQuestion();
+          // Read the next question after navigation
+          setTimeout(() => readCurrentQuestion(), 300);
         }
         break;
       }
@@ -1220,6 +1370,44 @@ export default function PracticePage() {
           const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
           if (targetIndex >= 0 && targetIndex < questions.length) {
             setCurrentQuestionIndex(targetIndex);
+            setTimeout(() => readCurrentQuestion(), 300);
+          }
+        }
+        break;
+      }
+
+      case 'REPEAT_QUESTION':
+      case 'READ_CURRENT_QUESTION': {
+        if (viewMode === 'quiz' && !showResults) {
+          readCurrentQuestion();
+        }
+        break;
+      }
+
+      case 'REPEAT_ANSWERS': {
+        if (viewMode === 'quiz' && !showResults) {
+          readAnswersOnly();
+        }
+        break;
+      }
+
+      case 'SKIP_QUESTION': {
+        if (viewMode === 'quiz' && !showResults) {
+          // Mark current as skipped (don't answer) and move to next unanswered
+          const nextUnanswered = findNextUnansweredQuestion(currentQuestionIndex + 1);
+          
+          if (nextUnanswered === -1 || nextUnanswered === currentQuestionIndex) {
+            // No other unanswered questions or only current is unanswered
+            if (voiceAgentRef.current && isVoiceAgentOpen) {
+              voiceAgentRef.current.speakText("This is the only unanswered question. Please answer or submit the quiz.");
+            }
+          } else {
+            setCurrentQuestionIndex(nextUnanswered);
+            if (voiceAgentRef.current && isVoiceAgentOpen) {
+              voiceAgentRef.current.speakText("Skipping to the next question.").then(() => {
+                setTimeout(() => readCurrentQuestion(), 300);
+              });
+            }
           }
         }
         break;
@@ -1232,7 +1420,8 @@ export default function PracticePage() {
     viewMode, showResults, currentQuestionIndex, generatedQuiz, activeQuiz,
     userId, handleSelectAnswer, handleNextQuestion, handlePrevQuestion,
     handleSubmitQuiz, handleNextCard, handlePrevCard, handleResetQuiz,
-    handleResetFlashcards, refreshPracticeOverview
+    handleResetFlashcards, refreshPracticeOverview, isVoiceAgentOpen,
+    readCurrentQuestion, readAnswersOnly, moveToNextOrSubmit, findNextUnansweredQuestion
   ]);
 
   if (isLoading && !practiceOverview) {
@@ -1278,6 +1467,7 @@ export default function PracticePage() {
           </button>
 
           <VoiceAgent
+            ref={voiceAgentRef}
             context={getVoiceAgentContext()}
             userId={userId}
             isOpen={isVoiceAgentOpen}
@@ -1401,6 +1591,7 @@ export default function PracticePage() {
         </button>
 
         <VoiceAgent
+          ref={voiceAgentRef}
           context={getVoiceAgentContext()}
           userId={userId}
           isOpen={isVoiceAgentOpen}
@@ -1639,6 +1830,7 @@ export default function PracticePage() {
         </button>
 
         <VoiceAgent
+          ref={voiceAgentRef}
           context={getVoiceAgentContext()}
           userId={userId}
           isOpen={isVoiceAgentOpen}

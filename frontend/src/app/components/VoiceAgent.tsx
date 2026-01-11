@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
 
 interface QuestionResult {
   questionNumber: number;
@@ -23,7 +23,17 @@ export type VoiceAction =
   | { type: 'NEXT_CARD' }
   | { type: 'PREV_CARD' }
   | { type: 'EXIT_PRACTICE' }
-  | { type: 'GO_TO_QUESTION'; params: { questionNumber: number } };
+  | { type: 'GO_TO_QUESTION'; params: { questionNumber: number } }
+  | { type: 'REPEAT_QUESTION' }
+  | { type: 'REPEAT_ANSWERS' }
+  | { type: 'SKIP_QUESTION' }
+  | { type: 'READ_CURRENT_QUESTION' };
+
+// Expose speakText method to parent via ref
+export interface VoiceAgentRef {
+  speakText: (text: string) => Promise<void>;
+  stopSpeaking: () => void;
+}
 
 interface VoiceAgentProps {
   context: {
@@ -63,7 +73,7 @@ interface Caption {
   type: 'user' | 'assistant' | 'system';
 }
 
-export default function VoiceAgent({ context, userId, isOpen, onClose, onAction }: VoiceAgentProps) {
+const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgent({ context, userId, isOpen, onClose, onAction }, ref) {
   const [isConnected, setIsConnected] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -378,6 +388,14 @@ export default function VoiceAgent({ context, userId, isOpen, onClose, onAction 
         return { type: 'PREV_CARD' };
       case 'EXIT_PRACTICE':
         return { type: 'EXIT_PRACTICE' };
+      case 'REPEAT_QUESTION':
+        return { type: 'REPEAT_QUESTION' };
+      case 'REPEAT_ANSWERS':
+        return { type: 'REPEAT_ANSWERS' };
+      case 'SKIP_QUESTION':
+        return { type: 'SKIP_QUESTION' };
+      case 'READ_CURRENT_QUESTION':
+        return { type: 'READ_CURRENT_QUESTION' };
       default:
         return null;
     }
@@ -564,6 +582,17 @@ export default function VoiceAgent({ context, userId, isOpen, onClose, onAction 
       }
     });
   };
+
+  // Expose methods to parent via ref
+  useImperativeHandle(ref, () => ({
+    speakText: async (text: string) => {
+      addCaption(text, 'assistant');
+      await speakText(text);
+    },
+    stopSpeaking: () => {
+      stopCurrentPlayback();
+    }
+  }), [addCaption, stopCurrentPlayback]);
 
   // Start recording audio
   const startRecording = async () => {
@@ -832,8 +861,9 @@ export default function VoiceAgent({ context, userId, isOpen, onClose, onAction 
                 )}
                 {context.viewMode === 'quiz' && !context.showResults && (
                   <>
-                    <p>• Say "A", "B", "C", or "D" to answer</p>
-                    <p>• "Next question" / "Previous question"</p>
+                    <p>• Say "A", "B", "C", or "D" to answer (auto-advances)</p>
+                    <p>• "Repeat question" / "Read the answers"</p>
+                    <p>• "Skip question" to skip current question</p>
                     <p>• "Submit quiz" to finish</p>
                     <p>• "Go back" to exit</p>
                   </>
@@ -858,4 +888,6 @@ export default function VoiceAgent({ context, userId, isOpen, onClose, onAction 
       </div>
     </div>
   );
-}
+});
+
+export default VoiceAgent;

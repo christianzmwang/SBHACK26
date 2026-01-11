@@ -58,7 +58,10 @@ AVAILABLE ACTIONS:
 7. NEXT_CARD - User wants to go to the next flashcard
 8. PREV_CARD - User wants to go to the previous flashcard
 9. EXIT_PRACTICE - User wants to exit/go back from current practice
-10. NONE - No specific action detected, just a conversational query
+10. REPEAT_QUESTION - User wants to hear the current question read again
+11. REPEAT_ANSWERS - User wants to hear the answer options read again
+12. SKIP_QUESTION - User wants to skip the current question and move to the next
+13. NONE - No specific action detected, just a conversational query
 
 CURRENT CONTEXT:
 - View Mode: ${context?.viewMode || 'overview'}
@@ -105,10 +108,13 @@ Important matching rules:
 - For answers, map common phrases: "first option" → "A", "second" → "B", "third" → "C", "fourth" → "D", "true" → "A", "false" → "B", "option 1" → "A", "option 2" → "B", "option 3" → "C", "option 4" → "D"
 - If context shows we're in a quiz, single letters or option references are likely answers
 - "show answer", "reveal", "flip", "what's the answer" → FLIP_CARD
-- "next", "skip", "continue" → NEXT_QUESTION or NEXT_CARD based on context
+- "next", "continue" → NEXT_QUESTION or NEXT_CARD based on context
+- "skip", "skip question", "skip this one" → SKIP_QUESTION (in quiz context)
 - "back", "previous", "go back" → PREV_QUESTION, PREV_CARD, or EXIT_PRACTICE based on context
 - "done", "finish", "submit", "I'm done" → SUBMIT_QUIZ
-- "exit", "quit", "stop", "leave" → EXIT_PRACTICE`;
+- "exit", "quit", "stop", "leave" → EXIT_PRACTICE
+- "repeat", "repeat question", "say that again", "what was the question", "read question" → REPEAT_QUESTION
+- "read the answers", "what are the options", "read options", "repeat answers" → REPEAT_ANSWERS`;
 
   try {
     const response = await chatCompletion([
