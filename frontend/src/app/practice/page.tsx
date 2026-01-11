@@ -308,6 +308,8 @@ export default function PracticePage() {
       const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
       const currentQuestion = questions[currentQuestionIndex];
       if (currentQuestion && voiceAgentRef.current) {
+        // Stop any ongoing speech before reading new question
+        voiceAgentRef.current.stopSpeaking();
         setTimeout(() => {
           const questionText = `Question ${currentQuestionIndex + 1} of ${questions.length}. ${currentQuestion.question}`;
           const answersText = currentQuestion.options
@@ -326,6 +328,8 @@ export default function PracticePage() {
       const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
       const currentCard = cards[currentCardIndex];
       if (currentCard && voiceAgentRef.current) {
+        // Stop any ongoing speech before reading new card
+        voiceAgentRef.current.stopSpeaking();
         setTimeout(() => {
           const cardNumber = currentCardIndex + 1;
           const totalCards = cards.length;
@@ -1437,6 +1441,9 @@ export default function PracticePage() {
     const currentCard = cards[currentCardIndex];
     if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
 
+    // Stop any ongoing speech before reading new card
+    voiceAgentRef.current.stopSpeaking();
+
     const cardNumber = currentCardIndex + 1;
     const totalCards = cards.length;
 
@@ -1460,6 +1467,9 @@ export default function PracticePage() {
     const currentCard = cards[currentCardIndex];
     if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
 
+    // Stop any ongoing speech before reading
+    voiceAgentRef.current.stopSpeaking();
+
     const frontText = currentCard.front || currentCard.question || '';
     await voiceAgentRef.current.speakText(frontText);
   }, [generatedFlashcards, activeFlashcardSet, currentCardIndex, isVoiceAgentOpen]);
@@ -1469,6 +1479,9 @@ export default function PracticePage() {
     const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
     const currentCard = cards[currentCardIndex];
     if (!currentCard || !voiceAgentRef.current || !isVoiceAgentOpen) return;
+
+    // Stop any ongoing speech before reading
+    voiceAgentRef.current.stopSpeaking();
 
     const backText = currentCard.back || currentCard.explanation || '';
     await voiceAgentRef.current.speakText(backText);
@@ -1648,11 +1661,14 @@ export default function PracticePage() {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
     const currentQuestion = questions[currentQuestionIndex];
     if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
-    
+
+    // Stop any ongoing speech before reading new question
+    voiceAgentRef.current.stopSpeaking();
+
     const questionText = formatQuestionForVoice(currentQuestion, currentQuestionIndex + 1, questions.length);
     const answersText = formatAnswersForVoice(currentQuestion);
     const fullText = `${questionText} ${answersText}`;
-    
+
     await voiceAgentRef.current.speakText(fullText);
   }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatQuestionForVoice, formatAnswersForVoice]);
 
@@ -1661,7 +1677,10 @@ export default function PracticePage() {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
     const currentQuestion = questions[currentQuestionIndex];
     if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
-    
+
+    // Stop any ongoing speech before reading
+    voiceAgentRef.current.stopSpeaking();
+
     const questionText = formatQuestionForVoice(currentQuestion, currentQuestionIndex + 1, questions.length);
     await voiceAgentRef.current.speakText(questionText);
   }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatQuestionForVoice]);
@@ -1671,7 +1690,10 @@ export default function PracticePage() {
     const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
     const currentQuestion = questions[currentQuestionIndex];
     if (!currentQuestion || !voiceAgentRef.current || !isVoiceAgentOpen) return;
-    
+
+    // Stop any ongoing speech before reading
+    voiceAgentRef.current.stopSpeaking();
+
     const answersText = formatAnswersForVoice(currentQuestion);
     await voiceAgentRef.current.speakText(answersText);
   }, [generatedQuiz, activeQuiz, currentQuestionIndex, isVoiceAgentOpen, formatAnswersForVoice]);
