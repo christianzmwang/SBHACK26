@@ -190,13 +190,8 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
             // User finished speaking - process the accumulated transcript
             handleUtteranceEnd();
           } else if (data.type === 'SpeechStarted') {
-            // User started speaking - if AI is ACTUALLY speaking audio, interrupt it (barge-in)
-            // Only interrupt if audio is playing, not during processing/waiting
-            if (isSpeakingRef.current) {
-              console.log('User interrupted - stopping AI playback (barge-in)');
-              stopCurrentPlayback();
-              addCaption('(Interrupted)', 'system');
-            }
+            // User started speaking - just set listening state
+            // Don't interrupt here - wait for actual meaningful transcript to confirm it's real speech
             setIsListening(true);
           } else if (data.type === 'Error') {
             console.error('Deepgram error:', data);
@@ -225,16 +220,55 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     }
   };
 
+  // Common filler sounds that shouldn't trigger interruption
+  const FILLER_SOUNDS = new Set([
+    'uh', 'um', 'uhm', 'uh-huh', 'uhuh', 'uh huh', 'uhhuh',
+    'hmm', 'hm', 'hmmmm', 'hmmm', 'mm', 'mmm', 'mhm', 'mm-hmm', 'mmhmm',
+    'ah', 'ahh', 'ahhh', 'oh', 'ohh', 'ohhh',
+    'eh', 'er', 'err', 'erm',
+    'like', 'so', 'well', 'yeah', 'yep', 'yup', 'nope', 'nah',
+    'okay', 'ok', 'right', 'sure', 'uh-huh', 'mhmm',
+    'huh', 'what', 'hmm?', 'hm?',
+  ]);
+
+  // Check if transcript is meaningful speech (not just noise or filler)
+  const isMeaningfulSpeech = (transcript: string, confidence?: number): boolean => {
+    if (!transcript || !transcript.trim()) return false;
+    
+    const trimmed = transcript.trim().toLowerCase();
+    
+    // Must have at least 2 characters
+    if (trimmed.length < 2) return false;
+    
+    // Check if it's just a filler sound
+    if (FILLER_SOUNDS.has(trimmed)) return false;
+    
+    // Also check without punctuation
+    const noPunctuation = trimmed.replace(/[?!.,]/g, '').trim();
+    if (FILLER_SOUNDS.has(noPunctuation)) return false;
+    
+    // Must have at least one word with 2+ characters that's not a filler
+    const words = trimmed.split(/\s+/).filter(w => w.length >= 2);
+    const meaningfulWords = words.filter(w => !FILLER_SOUNDS.has(w.replace(/[?!.,]/g, '')));
+    if (meaningfulWords.length === 0) return false;
+    
+    // If confidence is available, require minimum threshold
+    if (confidence !== undefined && confidence < 0.7) return false;
+    
+    return true;
+  };
+
   // Handle transcript results from Deepgram v1/listen
   const handleTranscriptResult = (data: any) => {
     const transcript = data.channel?.alternatives?.[0]?.transcript;
+    const confidence = data.channel?.alternatives?.[0]?.confidence;
     const isFinal = data.is_final;
     const speechFinal = data.speech_final;
 
     if (transcript) {
-      // If AI is ACTUALLY speaking audio and we get transcript, user is interrupting (barge-in)
-      // Only interrupt if audio is playing, not during processing/waiting for LLM
-      if (isSpeakingRef.current) {
+      // If AI is ACTUALLY speaking audio and we get meaningful transcript, user is interrupting (barge-in)
+      // Only interrupt if audio is playing and the speech is meaningful (not background noise)
+      if (isSpeakingRef.current && isFinal && isMeaningfulSpeech(transcript, confidence)) {
         console.log('User interrupted with speech - stopping AI (barge-in)');
         stopCurrentPlayback();
         addCaption('(Interrupted)', 'system');
