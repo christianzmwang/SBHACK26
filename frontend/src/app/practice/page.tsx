@@ -109,6 +109,11 @@ export default function PracticePage() {
   const shouldAutoReadQuestionRef = useRef(false);
   const shouldAutoReadCardRef = useRef(false);
   const shouldAutoAdvanceRef = useRef(false);
+  const lastAnsweredQuestionRef = useRef<{ questionId: string; answer: string } | null>(null);
+
+  // Keep refs in sync with state for voice handlers (to avoid stale closures)
+  const currentQuestionIndexRef = useRef(currentQuestionIndex);
+  const currentCardIndexRef = useRef(currentCardIndex);
 
   // Question overview modal state
   const [showQuestionOverview, setShowQuestionOverview] = useState(false);
@@ -120,6 +125,15 @@ export default function PracticePage() {
   const [newFolderColor, setNewFolderColor] = useState('#6366f1');
 
   const userId = session?.user?.id;
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    currentQuestionIndexRef.current = currentQuestionIndex;
+  }, [currentQuestionIndex]);
+
+  useEffect(() => {
+    currentCardIndexRef.current = currentCardIndex;
+  }, [currentCardIndex]);
 
   // Helper to get hex color for folder (handles both hex and named colors)
   const getFolderColor = (color: string): string => {
@@ -301,23 +315,40 @@ export default function PracticePage() {
       shouldAutoAdvanceRef.current = false;
 
       const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
-      const nextUnanswered = questions.findIndex((q, idx) => {
-        const questionId = q.id ? String(q.id) : `q-${idx}`;
-        const answer = selectedAnswers[questionId];
-        return (answer === undefined || answer === null || answer === '') && idx > currentQuestionIndex;
-      });
 
-      // If no unanswered questions after current, check from beginning
-      let finalNextUnanswered = nextUnanswered;
-      if (nextUnanswered === -1) {
-        finalNextUnanswered = questions.findIndex((q, idx) => {
-          const questionId = q.id ? String(q.id) : `q-${idx}`;
-          const answer = selectedAnswers[questionId];
-          return answer === undefined || answer === null || answer === '';
-        });
+      // Build the updated answers including the one we just recorded
+      const updatedAnswers = { ...selectedAnswers };
+      if (lastAnsweredQuestionRef.current) {
+        updatedAnswers[lastAnsweredQuestionRef.current.questionId] = lastAnsweredQuestionRef.current.answer;
+        lastAnsweredQuestionRef.current = null; // Clear after using
       }
 
-      if (finalNextUnanswered === -1) {
+      // Find next unanswered question starting from currentQuestionIndex + 1
+      let nextUnanswered = -1;
+      for (let i = currentQuestionIndex + 1; i < questions.length; i++) {
+        const q = questions[i];
+        const questionId = q.id ? String(q.id) : `q-${i}`;
+        const answer = updatedAnswers[questionId];
+        if (!answer || answer === '') {
+          nextUnanswered = i;
+          break;
+        }
+      }
+
+      // If no unanswered questions after current, wrap around from beginning
+      if (nextUnanswered === -1) {
+        for (let i = 0; i < currentQuestionIndex; i++) {
+          const q = questions[i];
+          const questionId = q.id ? String(q.id) : `q-${i}`;
+          const answer = updatedAnswers[questionId];
+          if (!answer || answer === '') {
+            nextUnanswered = i;
+            break;
+          }
+        }
+      }
+
+      if (nextUnanswered === -1) {
         // All questions answered - submit the quiz
         if (voiceAgentRef.current && isVoiceAgentOpen) {
           voiceAgentRef.current.speakText("All questions answered. Submitting your quiz.").then(() => {
@@ -329,7 +360,7 @@ export default function PracticePage() {
       } else {
         // Move to next unanswered question and flag for auto-read
         shouldAutoReadQuestionRef.current = true;
-        setCurrentQuestionIndex(finalNextUnanswered);
+        setCurrentQuestionIndex(nextUnanswered);
       }
     }
   }, [selectedAnswers, viewMode, showResults, currentQuestionIndex, generatedQuiz, activeQuiz, isVoiceAgentOpen, handleSubmitQuiz]);
@@ -1507,70 +1538,29 @@ export default function PracticePage() {
       case 'ANSWER_QUESTION': {
         if (viewMode === 'quiz' && !showResults) {
           const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
-          const currentQuestion = questions[currentQuestionIndex];
+          // Use the ref to get the CURRENT question index (not stale closure)
+          const actualCurrentIndex = currentQuestionIndexRef.current;
+          const currentQuestion = questions[actualCurrentIndex];
           if (currentQuestion) {
-            const questionId = currentQuestion.id ? String(currentQuestion.id) : `q-${currentQuestionIndex}`;
+            const questionId = currentQuestion.id ? String(currentQuestion.id) : `q-${actualCurrentIndex}`;
             const answer = action.params.answer.toUpperCase();
 
             // Validate the answer is valid (A, B, C, D)
             if (['A', 'B', 'C', 'D'].includes(answer)) {
-              // Record the answer
+              // Store the answer in ref so the effect can use it
+              lastAnsweredQuestionRef.current = { questionId, answer };
+
+              // Record the answer immediately
               handleSelectAnswer(questionId, answer);
 
-              // Announce the selection and then auto-advance
+              // Announce the selection
               if (voiceAgentRef.current && isVoiceAgentOpen) {
                 const optionText = currentQuestion.options?.[answer as keyof typeof currentQuestion.options] || answer;
-                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`).then(() => {
-                  // After speaking, use setTimeout to ensure state has updated
-                  setTimeout(() => {
-                    // Now find next unanswered with the updated state
-                    const updatedAnswers = { ...selectedAnswers, [questionId]: answer };
-                    let nextUnanswered = -1;
-
-                    // Search from next question onwards
-                    for (let i = currentQuestionIndex + 1; i < questions.length; i++) {
-                      const q = questions[i];
-                      const qId = q.id ? String(q.id) : `q-${i}`;
-                      const ans = updatedAnswers[qId];
-                      if (!ans || ans === '') {
-                        nextUnanswered = i;
-                        break;
-                      }
-                    }
-
-                    // If not found, wrap around from beginning
-                    if (nextUnanswered === -1) {
-                      for (let i = 0; i < currentQuestionIndex; i++) {
-                        const q = questions[i];
-                        const qId = q.id ? String(q.id) : `q-${i}`;
-                        const ans = updatedAnswers[qId];
-                        if (!ans || ans === '') {
-                          nextUnanswered = i;
-                          break;
-                        }
-                      }
-                    }
-
-                    if (nextUnanswered === -1) {
-                      // All answered - submit
-                      voiceAgentRef.current?.speakText("All questions answered. Submitting your quiz.").then(() => {
-                        handleSubmitQuiz();
-                      });
-                    } else {
-                      // Move to next and flag for read
-                      //shouldAutoReadQuestionRef.current = true;
-                      //setCurrentQuestionIndex(nextUnanswered);
-                      if (isVoiceAgentOpen) {
-                        shouldAutoReadQuestionRef.current = true;
-                      }
-                      handleNextQuestion();
-                    }
-                  }, 100);
-                });
-              } else {
-                // No voice - just set the flag for auto-advance
-                shouldAutoAdvanceRef.current = true;
+                voiceAgentRef.current.speakText(`Selected ${answer}: ${optionText}.`);
               }
+
+              // Set flag to auto-advance after state updates
+              shouldAutoAdvanceRef.current = true;
             }
           }
         }
