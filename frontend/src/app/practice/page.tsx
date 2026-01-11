@@ -1558,8 +1558,12 @@ export default function PracticePage() {
                       });
                     } else {
                       // Move to next and flag for read
-                      shouldAutoReadQuestionRef.current = true;
-                      setCurrentQuestionIndex(nextUnanswered);
+                      //shouldAutoReadQuestionRef.current = true;
+                      //setCurrentQuestionIndex(nextUnanswered);
+                      if (isVoiceAgentOpen) {
+                        shouldAutoReadQuestionRef.current = true;
+                      }
+                      handleNextQuestion();
                     }
                   }, 100);
                 });
