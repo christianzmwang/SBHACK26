@@ -774,6 +774,8 @@ export interface MaterialStructure {
   chapters: {
     number: number;
     title: string;
+    description?: string;
+    isGeneratedTopic?: boolean;
     chunkCount: number;
     percentage: string;
     topics: string[];
