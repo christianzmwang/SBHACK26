@@ -337,6 +337,29 @@ export interface PracticeOverview {
   };
 }
 
+// Topic Analysis Types
+export interface TopicPerformance {
+  topic: string;
+  chapter: number | null;
+  totalAttempts: number;
+  correctCount: number;
+  accuracy: number;
+  lastPracticed: string;
+  quizNames: string[];
+  needsWork: boolean;
+}
+
+export interface TopicAnalysis {
+  topics: TopicPerformance[];
+  summary: {
+    totalTopics: number;
+    weakTopicsCount: number;
+    strongTopicsCount: number;
+    overallAccuracy: number | null;
+  };
+  focusAreas: TopicPerformance[];
+}
+
 export const practiceApi = {
   // =====================
   // OVERVIEW & FOLDERS
@@ -355,6 +378,12 @@ export const practiceApi = {
         stats: data.stats
       };
     }, { maxRetries: 3, delayMs: 500, backoff: true });
+  },
+
+  async getTopicAnalysis(userId: string): Promise<TopicAnalysis> {
+    const response = await fetch(`${API_BASE}/practice/topic-analysis?userId=${userId}`);
+    const data = await handleResponse<{ topicAnalysis: TopicAnalysis }>(response);
+    return data.topicAnalysis;
   },
 
   async listFolders(userId: string): Promise<PracticeFolder[]> {

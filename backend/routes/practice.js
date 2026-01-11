@@ -208,6 +208,97 @@ router.get('/folders/:folderId', async (req, res) => {
 });
 
 // =====================
+// TOPIC PERFORMANCE ANALYSIS
+// =====================
+
+/**
+ * Analyze user performance by topic/chapter to identify weak areas
+ * GET /api/practice/topic-analysis
+ */
+router.get('/topic-analysis', async (req, res) => {
+  try {
+    const userId = req.query.userId || req.headers['x-user-id'];
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Get all questions with their topics and user's performance on them
+    // Join quiz_attempts with questions to get per-question performance
+    const performanceResult = await query(
+      `SELECT 
+        q.topic,
+        q.chapter,
+        COUNT(*) as total_attempts,
+        SUM(
+          CASE 
+            WHEN (qa.answers->>(q.id::text))::jsonb->>'isCorrect' = 'true' THEN 1 
+            ELSE 0 
+          END
+        ) as correct_count,
+        ROUND(
+          100.0 * SUM(
+            CASE 
+              WHEN (qa.answers->>(q.id::text))::jsonb->>'isCorrect' = 'true' THEN 1 
+              ELSE 0 
+            END
+          ) / NULLIF(COUNT(*), 0)
+        ) as accuracy_percent,
+        MAX(qa.completed_at) as last_practiced,
+        array_agg(DISTINCT qs.name) as quiz_names
+      FROM quiz_attempts qa
+      JOIN quiz_sets qs ON qa.quiz_set_id = qs.id
+      JOIN questions q ON q.quiz_set_id = qs.id
+      WHERE qa.user_id = $1
+        AND q.topic IS NOT NULL 
+        AND q.topic != ''
+        AND q.topic != 'Academic Resources'
+        AND qa.answers->>(q.id::text) IS NOT NULL
+      GROUP BY q.topic, q.chapter
+      ORDER BY accuracy_percent ASC, total_attempts DESC`,
+      [userId]
+    );
+
+    // Calculate overall statistics
+    const topics = performanceResult.rows;
+    const weakTopics = topics.filter(t => t.accuracy_percent < 70);
+    const strongTopics = topics.filter(t => t.accuracy_percent >= 80);
+    const overallAccuracy = topics.length > 0
+      ? Math.round(topics.reduce((sum, t) => sum + (t.correct_count / t.total_attempts) * 100, 0) / topics.length)
+      : null;
+
+    // Format the response
+    const formattedTopics = topics.map(t => ({
+      topic: t.topic,
+      chapter: t.chapter,
+      totalAttempts: parseInt(t.total_attempts),
+      correctCount: parseInt(t.correct_count),
+      accuracy: parseInt(t.accuracy_percent),
+      lastPracticed: t.last_practiced,
+      quizNames: t.quiz_names.slice(0, 3), // Limit to 3 quiz names
+      needsWork: parseInt(t.accuracy_percent) < 70
+    }));
+
+    res.json({
+      success: true,
+      topicAnalysis: {
+        topics: formattedTopics,
+        summary: {
+          totalTopics: topics.length,
+          weakTopicsCount: weakTopics.length,
+          strongTopicsCount: strongTopics.length,
+          overallAccuracy
+        },
+        focusAreas: formattedTopics.filter(t => t.needsWork).slice(0, 5) // Top 5 areas to focus on
+      }
+    });
+  } catch (error) {
+    console.error('Error analyzing topic performance:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =====================
 // PRACTICE OVERVIEW
 // =====================
 

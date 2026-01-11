@@ -685,15 +685,23 @@ INSTRUCTIONS:
 
 CRITICAL RULES (VIOLATION = FAILURE):
 1. QUESTIONS MUST BE STANDALONE. They must make sense to someone who has never seen the source text but knows the subject.
-2. NEVER reference the text/passage/author in the question or answer.
+2. NEVER reference the text/passage/author/book in the question or answer.
    - ❌ BAD: "According to the text, what is..."
    - ❌ BAD: "The author argues that..."
    - ❌ BAD: "As mentioned in the passage..."
+   - ❌ BAD: "In the described book, what..."
    - ✅ GOOD: "What is..."
    - ✅ GOOD: "Which factor contributes to..."
 3. Test CONCEPTS and KNOWLEDGE, not reading comprehension.
    - ❌ BAD: "What does the second paragraph say about X?"
    - ✅ GOOD: "How does X affect Y?"
+4. NEVER ask about the book/document structure, meta-information, or publishing details:
+   - ❌ BAD: "What is the purpose of the 'Further Reading' sections?"
+   - ❌ BAD: "What sources were used to write this book?"
+   - ❌ BAD: "What is stated in the introduction/preface/appendix?"
+   - ❌ BAD: "How is the book organized?"
+   - ❌ BAD: "What is the author's stated purpose?"
+   - ✅ GOOD: Focus on the SUBJECT MATTER being taught, not the book itself
 
 ${difficultyGuide}
 ${mathGuide}
