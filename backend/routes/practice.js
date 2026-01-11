@@ -480,14 +480,27 @@ router.post('/quizzes/:quizId/attempt', async (req, res) => {
 
     for (const question of quiz.questions) {
       const userAnswer = answers[question.id];
-      const isCorrect = userAnswer === question.correct_answer;
+      let expectedAnswer = question.correct_answer;
+      
+      // Handle true/false questions - frontend sends "A" for True, "B" for False
+      // but correct_answer is stored as "true" or "false"
+      if (question.question_type === 'true_false' && expectedAnswer) {
+        const normalizedAnswer = String(expectedAnswer).toLowerCase();
+        if (normalizedAnswer === 'true') {
+          expectedAnswer = 'A';
+        } else if (normalizedAnswer === 'false') {
+          expectedAnswer = 'B';
+        }
+      }
+      
+      const isCorrect = userAnswer === expectedAnswer;
 
       if (isCorrect) correct++;
 
       detailedAnswers[question.id] = {
         answer: userAnswer,
         isCorrect,
-        correctAnswer: question.correct_answer
+        correctAnswer: expectedAnswer
       };
     }
 

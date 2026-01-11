@@ -43,6 +43,7 @@ export interface Quiz {
   difficulty: string;
   syllabus_aligned: boolean;
   created_at: string;
+  best_score?: number;
   questions?: Question[];
 }
 
@@ -63,6 +64,7 @@ export interface FlashcardSet {
   total_cards: number;
   chapters_covered: number[];
   created_at: string;
+  mastery_count?: number;
   cards?: Flashcard[];
 }
 
@@ -319,6 +321,7 @@ export interface QuizAttempt {
   percentage: number;
   time_taken?: number;
   completed_at: string;
+  answers?: Record<string, { answer: string; isCorrect: boolean; correctAnswer: string }>;
 }
 
 export interface PracticeOverview {
