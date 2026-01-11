@@ -7,6 +7,7 @@ import { useData } from "@/app/context/DataContext";
 import {
   foldersApi,
   practiceApi,
+  materialsApi,
   type Folder,
   type MaterialSection,
   type GeneratedQuiz,
@@ -17,6 +18,9 @@ import {
   type SavedQuiz,
   type SavedFlashcardSet,
   type PracticeOverview,
+  type SectionStructure,
+  type MaterialStructure,
+  type MaterialChapter,
 } from "@/lib/api";
 
 // View modes for the practice page
@@ -24,6 +28,9 @@ type ViewMode = 'overview' | 'generate' | 'quiz' | 'flashcards' | 'folder';
 
 // Practice mode for viewing a set
 type PracticeMode = 'multiple_choice' | 'true_false' | 'flashcards';
+
+// Generation type - what the user wants to create
+type GenerationType = 'multiple_choice' | 'true_false' | 'flashcards';
 
 // Flattened item for selection
 interface SelectableItem {
@@ -68,12 +75,20 @@ export default function PracticePage() {
   const [selectedMaterials, setSelectedMaterials] = useState<Set<string>>(new Set());
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   
+  // Chapter selection state for granular quiz generation
+  const [sectionStructures, setSectionStructures] = useState<Map<string, SectionStructure>>(new Map());
+  const [loadingStructures, setLoadingStructures] = useState<Set<string>>(new Set());
+  // Map: materialId -> Set of selected chapter numbers (empty set = all chapters)
+  const [selectedChapters, setSelectedChapters] = useState<Map<string, Set<number>>>(new Map());
+  const [expandedMaterials, setExpandedMaterials] = useState<Set<string>>(new Set());
+  
   // Practice set generation state
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStatus, setGenerationStatus] = useState<string>('');
   const [setSize, setSetSize] = useState<string>('20');
   const [practiceNameInput, setPracticeNameInput] = useState('');
   const [saveToPracticeFolder, setSaveToPracticeFolder] = useState<string | null>(null);
+  const [selectedGenerationType, setSelectedGenerationType] = useState<GenerationType>('multiple_choice');
 
   // Generated content state
   const [generatedQuiz, setGeneratedQuiz] = useState<GeneratedQuiz | null>(null);
@@ -192,6 +207,54 @@ export default function PracticePage() {
       setExpandedFolders(allFolderIds);
     }
   }, [viewMode, materialFolders]);
+
+  // Load section structures when materials are selected
+  useEffect(() => {
+    const loadStructures = async () => {
+      // Collect all section IDs from selected materials
+      const sectionIds = new Set<string>();
+      
+      // From individually selected materials
+      selectedMaterials.forEach(sectionId => {
+        sectionIds.add(sectionId);
+      });
+      
+      // From selected folders
+      selectedFolders.forEach(folderId => {
+        const folder = findFolderById(materialFolders, folderId);
+        if (folder) {
+          const collectSections = (f: Folder) => {
+            f.sections.forEach(s => sectionIds.add(s.id));
+            f.subfolders.forEach(sf => collectSections(sf));
+          };
+          collectSections(folder);
+        }
+      });
+
+      // Load structure for each section that we don't have yet
+      for (const sectionId of sectionIds) {
+        if (!sectionStructures.has(sectionId) && !loadingStructures.has(sectionId)) {
+          setLoadingStructures(prev => new Set(prev).add(sectionId));
+          try {
+            const structure = await materialsApi.getSectionStructure(sectionId);
+            setSectionStructures(prev => new Map(prev).set(sectionId, structure));
+          } catch (err) {
+            console.error('Failed to load section structure:', err);
+          } finally {
+            setLoadingStructures(prev => {
+              const next = new Set(prev);
+              next.delete(sectionId);
+              return next;
+            });
+          }
+        }
+      }
+    };
+
+    if (viewMode === 'generate' && (selectedMaterials.size > 0 || selectedFolders.size > 0)) {
+      loadStructures();
+    }
+  }, [viewMode, selectedMaterials, selectedFolders, materialFolders, sectionStructures, loadingStructures]);
 
   // Auto-read first question/card when entering quiz/flashcard mode with voice agent open
   const prevViewModeRef = useRef<ViewMode>(viewMode);
@@ -678,7 +741,99 @@ export default function PracticePage() {
   const clearSelection = () => {
     setSelectedFolders(new Set());
     setSelectedMaterials(new Set());
+    setSelectedChapters(new Map());
+    setExpandedMaterials(new Set());
   };
+
+  // Toggle chapter selection for a material
+  const toggleChapterSelection = (materialId: string, chapterNum: number) => {
+    setSelectedChapters(prev => {
+      const next = new Map(prev);
+      const currentChapters = next.get(materialId) || new Set<number>();
+      const newChapters = new Set(currentChapters);
+      
+      if (newChapters.has(chapterNum)) {
+        newChapters.delete(chapterNum);
+      } else {
+        newChapters.add(chapterNum);
+      }
+      
+      if (newChapters.size === 0) {
+        next.delete(materialId);
+      } else {
+        next.set(materialId, newChapters);
+      }
+      
+      return next;
+    });
+  };
+
+  // Select all chapters for a material
+  const selectAllChapters = (materialId: string, chapters: MaterialChapter[]) => {
+    setSelectedChapters(prev => {
+      const next = new Map(prev);
+      next.set(materialId, new Set(chapters.map(ch => ch.number)));
+      return next;
+    });
+  };
+
+  // Clear chapter selection for a material (use all chapters)
+  const clearChapterSelection = (materialId: string) => {
+    setSelectedChapters(prev => {
+      const next = new Map(prev);
+      next.delete(materialId);
+      return next;
+    });
+  };
+
+  // Toggle material expansion for chapter view
+  const toggleMaterialExpansion = (materialId: string) => {
+    setExpandedMaterials(prev => {
+      const next = new Set(prev);
+      if (next.has(materialId)) {
+        next.delete(materialId);
+      } else {
+        next.add(materialId);
+      }
+      return next;
+    });
+  };
+
+  // Check if material has chapters selected (for filtering)
+  const hasChapterFilter = selectedChapters.size > 0;
+
+  // Get all materials with chapters from selected sections
+  const materialsWithChapters = useMemo(() => {
+    const result: MaterialStructure[] = [];
+    
+    // Collect all section IDs
+    const sectionIds = new Set<string>();
+    selectedMaterials.forEach(id => sectionIds.add(id));
+    selectedFolders.forEach(folderId => {
+      const folder = findFolderById(materialFolders, folderId);
+      if (folder) {
+        const collectSections = (f: Folder) => {
+          f.sections.forEach(s => sectionIds.add(s.id));
+          f.subfolders.forEach(sf => collectSections(sf));
+        };
+        collectSections(folder);
+      }
+    });
+
+    // Get materials with chapters from structures
+    sectionIds.forEach(sectionId => {
+      const structure = sectionStructures.get(sectionId);
+      if (structure) {
+        structure.materials.forEach(mat => {
+          if (mat.hasChapters && mat.chapters.length > 0) {
+            result.push(mat);
+          }
+        });
+      }
+    });
+
+    return result;
+  }, [selectedMaterials, selectedFolders, materialFolders, sectionStructures]);
 
   // Helper to find folder by ID
   const findFolderById = (folderList: Folder[], folderId: string): Folder | null => {
@@ -757,56 +912,89 @@ export default function PracticePage() {
         return;
       }
 
-      // Generate ALL 3 types for the practice set
+      // Generate the selected type only
       const baseName = practiceNameInput || `Practice Set - ${new Date().toISOString().split('T')[0]}`;
       
-      // 1. Generate Multiple Choice questions
-      setGenerationStatus('Generating Multiple Choice questions...');
-      const mcQuiz = await practiceApi.generateQuiz({
-        sectionIds,
-        userId,
-        questionCount: parsedSetSize,
-        questionType: 'multiple_choice',
-        difficulty: 'mixed',
-        name: `${baseName} (Multiple Choice)`,
-        folderId: saveToPracticeFolder || undefined,
-        onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
-      });
+      // Build chapter filter if any chapters are selected
+      const chapterFilter = selectedChapters.size > 0 
+        ? Array.from(selectedChapters.entries()).map(([materialId, chapters]) => ({
+            materialId,
+            chapters: Array.from(chapters)
+          }))
+        : undefined;
+
+      if (chapterFilter) {
+        console.log('[Generate] Using chapter filter:', chapterFilter);
+      }
       
-      // 2. Generate True/False questions
-      setGenerationStatus('Generating True/False questions...');
-      const tfQuiz = await practiceApi.generateQuiz({
-        sectionIds,
-        userId,
-        questionCount: parsedSetSize,
-        questionType: 'true_false',
-        difficulty: 'mixed',
-        name: `${baseName} (True/False)`,
-        folderId: saveToPracticeFolder || undefined,
-        onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
-      });
-      
-      // 3. Generate Flashcards
-      setGenerationStatus('Generating Flashcards...');
-      const flashcardSet = await practiceApi.generateFlashcards({
-        sectionIds,
-        userId,
-        count: parsedSetSize,
-        name: `${baseName} (Flashcards)`,
-        folderId: saveToPracticeFolder || undefined,
-      });
-      
-      setGenerationStatus('');
-      
-      // Start with multiple choice quiz view
-      setGeneratedQuiz(mcQuiz);
-      setGeneratedFlashcards(null);
-      setCurrentQuestionIndex(0);
-      setSelectedAnswers({});
-      setShowResults(false);
-      setQuizStartTime(Date.now());
-      setPracticeMode('multiple_choice');
-      setViewMode('quiz');
+      // Generate based on selected type
+      if (selectedGenerationType === 'multiple_choice') {
+        setGenerationStatus('Generating Multiple Choice questions...');
+        const mcQuiz = await practiceApi.generateQuiz({
+          sectionIds,
+          userId,
+          questionCount: parsedSetSize,
+          questionType: 'multiple_choice',
+          difficulty: 'mixed',
+          name: baseName,
+          folderId: saveToPracticeFolder || undefined,
+          onProgress: (msg) => setGenerationStatus(msg),
+          chapterFilter,
+        });
+        
+        setGenerationStatus('');
+        setGeneratedQuiz(mcQuiz);
+        setGeneratedFlashcards(null);
+        setCurrentQuestionIndex(0);
+        setSelectedAnswers({});
+        setShowResults(false);
+        setQuizStartTime(Date.now());
+        setPracticeMode('multiple_choice');
+        setViewMode('quiz');
+        
+      } else if (selectedGenerationType === 'true_false') {
+        setGenerationStatus('Generating True/False questions...');
+        const tfQuiz = await practiceApi.generateQuiz({
+          sectionIds,
+          userId,
+          questionCount: parsedSetSize,
+          questionType: 'true_false',
+          difficulty: 'mixed',
+          name: baseName,
+          folderId: saveToPracticeFolder || undefined,
+          onProgress: (msg) => setGenerationStatus(msg),
+          chapterFilter,
+        });
+        
+        setGenerationStatus('');
+        setGeneratedQuiz(tfQuiz);
+        setGeneratedFlashcards(null);
+        setCurrentQuestionIndex(0);
+        setSelectedAnswers({});
+        setShowResults(false);
+        setQuizStartTime(Date.now());
+        setPracticeMode('true_false');
+        setViewMode('quiz');
+        
+      } else if (selectedGenerationType === 'flashcards') {
+        // Generate flashcards directly
+        setGenerationStatus('Generating flashcards...');
+        const flashcardSet = await practiceApi.generateFlashcards({
+          sectionIds,
+          userId,
+          count: parsedSetSize,
+          name: baseName,
+          folderId: saveToPracticeFolder || undefined,
+          chapterFilter,
+        });
+        
+        setGenerationStatus('');
+        setGeneratedFlashcards(flashcardSet);
+        setGeneratedQuiz(null);
+        setCurrentCardIndex(0);
+        setIsFlipped(false);
+        setViewMode('flashcards');
+      }
       
       // Refresh overview to show all new practice sets
       refreshPracticeOverview();
@@ -1475,56 +1663,54 @@ export default function PracticePage() {
           const baseName = materialName || folderName || `Practice Set - ${new Date().toISOString().split('T')[0]}`;
           
           try {
-            // Generate ALL 3 types for the practice set
-            // 1. Multiple Choice
-            setGenerationStatus('Generating Multiple Choice questions...');
-            const mcQuiz = await practiceApi.generateQuiz({
-              sectionIds,
-              userId: userId!,
-              questionCount: parsedCount,
-              questionType: 'multiple_choice',
-              difficulty: 'mixed',
-              name: `${baseName} (Multiple Choice)`,
-              folderId: folderId || undefined,
-              onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
-            });
+            // Generate based on selected generation type (defaults to multiple_choice)
+            const genType = selectedGenerationType;
             
-            // 2. True/False
-            setGenerationStatus('Generating True/False questions...');
-            await practiceApi.generateQuiz({
-              sectionIds,
-              userId: userId!,
-              questionCount: parsedCount,
-              questionType: 'true_false',
-              difficulty: 'mixed',
-              name: `${baseName} (True/False)`,
-              folderId: folderId || undefined,
-              onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
-            });
+            if (genType === 'multiple_choice' || genType === 'true_false') {
+              setGenerationStatus(`Generating ${genType === 'multiple_choice' ? 'Multiple Choice' : 'True/False'} questions...`);
+              const quiz = await practiceApi.generateQuiz({
+                sectionIds,
+                userId: userId!,
+                questionCount: parsedCount,
+                questionType: genType,
+                difficulty: 'mixed',
+                name: baseName,
+                folderId: folderId || undefined,
+                onProgress: (msg) => setGenerationStatus(msg),
+              });
+              
+              setGenerationStatus('');
+              setGeneratedQuiz(quiz);
+              setGeneratedFlashcards(null);
+              setCurrentQuestionIndex(0);
+              setSelectedAnswers({});
+              setShowResults(false);
+              setQuizStartTime(Date.now());
+              setPracticeMode(genType);
+              setViewMode('quiz');
+            } else {
+              // Flashcards
+              setGenerationStatus('Generating flashcards...');
+              const flashcardSet = await practiceApi.generateFlashcards({
+                sectionIds,
+                userId: userId!,
+                count: parsedCount,
+                name: baseName,
+                folderId: folderId || undefined,
+              });
+              
+              setGenerationStatus('');
+              setGeneratedFlashcards(flashcardSet);
+              setGeneratedQuiz(null);
+              setCurrentCardIndex(0);
+              setIsFlipped(false);
+              setViewMode('flashcards');
+            }
             
-            // 3. Flashcards
-            setGenerationStatus('Generating Flashcards...');
-            await practiceApi.generateFlashcards({
-              sectionIds,
-              userId: userId!,
-              count: parsedCount,
-              name: `${baseName} (Flashcards)`,
-              folderId: folderId || undefined,
-            });
-            
-            setGenerationStatus('');
-            setGeneratedQuiz(mcQuiz);
-            setGeneratedFlashcards(null);
-            setCurrentQuestionIndex(0);
-            setSelectedAnswers({});
-            setShowResults(false);
-            setQuizStartTime(Date.now());
-            setPracticeMode('multiple_choice');
-            setViewMode('quiz');
             refreshPracticeOverview();
           } catch (err) {
             console.error('Voice-initiated quiz generation failed:', err);
-            setError(err instanceof Error ? err.message : 'Failed to generate quiz');
+            setError(err instanceof Error ? err.message : 'Failed to generate practice set');
           } finally {
             setIsGenerating(false);
           }
@@ -2298,7 +2484,9 @@ export default function PracticePage() {
 
             {/* Set size input */}
             <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">Set Size</h3>
+              <h3 className="text-sm font-semibold text-white mb-3">
+                {selectedGenerationType === 'flashcards' ? 'Number of Cards' : 'Number of Questions'}
+              </h3>
               <div className="flex items-center gap-3">
                 <input
                   type="number"
@@ -2308,10 +2496,126 @@ export default function PracticePage() {
                   max="100"
                   className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
                 />
-                <span className="text-slate-400 text-sm">questions</span>
+                <span className="text-slate-400 text-sm">
+                  {selectedGenerationType === 'flashcards' ? 'cards' : 'questions'}
+                </span>
               </div>
               <p className="text-slate-500 text-xs mt-2">Min: 5, Max: 100</p>
             </div>
+
+            {/* Chapter selection - only show when materials with chapters are selected */}
+            {materialsWithChapters.length > 0 && (
+              <div className="border border-slate-800 bg-black p-4 max-h-64 overflow-y-auto">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-white">Filter by Chapters</h3>
+                  {hasChapterFilter && (
+                    <button
+                      onClick={() => setSelectedChapters(new Map())}
+                      className="text-xs text-slate-400 hover:text-white transition cursor-pointer"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+                <p className="text-slate-500 text-xs mb-3">
+                  {hasChapterFilter 
+                    ? `Filtering by ${Array.from(selectedChapters.values()).reduce((sum, s) => sum + s.size, 0)} selected chapter(s)` 
+                    : 'Select specific chapters or leave empty to use all content'}
+                </p>
+                
+                <div className="space-y-3">
+                  {materialsWithChapters.map(material => {
+                    const isExpanded = expandedMaterials.has(material.id);
+                    const materialSelectedChapters = selectedChapters.get(material.id);
+                    const hasFilter = materialSelectedChapters && materialSelectedChapters.size > 0;
+                    
+                    return (
+                      <div key={material.id} className="border border-slate-700 bg-slate-900/50">
+                        <button
+                          onClick={() => toggleMaterialExpansion(material.id)}
+                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/50 transition cursor-pointer"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                            <span className="text-sm text-white truncate">{material.title || material.fileName}</span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {hasFilter && (
+                              <span className="text-xs bg-indigo-600 px-1.5 py-0.5 rounded text-white">
+                                {materialSelectedChapters.size}/{material.chapters.length}
+                              </span>
+                            )}
+                            <span className="text-xs text-slate-500">{material.chapters.length} ch</span>
+                          </div>
+                        </button>
+                        
+                        {isExpanded && (
+                          <div className="px-3 pb-3 pt-1 border-t border-slate-700">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs text-slate-400">Select chapters:</span>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => selectAllChapters(material.id, material.chapters)}
+                                  className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                                >
+                                  All
+                                </button>
+                                <span className="text-slate-600">|</span>
+                                <button
+                                  onClick={() => clearChapterSelection(material.id)}
+                                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                                >
+                                  None
+                                </button>
+                              </div>
+                            </div>
+                            <div className="space-y-1 max-h-32 overflow-y-auto">
+                              {material.chapters.map(chapter => {
+                                const isSelected = materialSelectedChapters?.has(chapter.number) || false;
+                                return (
+                                  <label
+                                    key={chapter.number}
+                                    className="flex items-center gap-2 px-2 py-1.5 hover:bg-slate-800/50 cursor-pointer group"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => toggleChapterSelection(material.id, chapter.number)}
+                                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <span className="text-sm text-white group-hover:text-indigo-300 transition">
+                                        {chapter.isGeneratedTopic ? '' : `Ch ${chapter.number}: `}{chapter.title}
+                                      </span>
+                                      <span className="text-xs text-slate-500 ml-2">({chapter.percentage})</span>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                {loadingStructures.size > 0 && (
+                  <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
+                    <div className="animate-spin h-3 w-3 border-2 border-slate-400 border-t-transparent rounded-full" />
+                    Loading chapter information...
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Save to folder */}
             <div className="border border-slate-800 bg-black p-4">
@@ -2328,33 +2632,100 @@ export default function PracticePage() {
               </select>
             </div>
 
-            {/* What will be generated */}
+            {/* Generation type selector */}
             <div className="border border-slate-800 bg-black p-4">
-              <h3 className="text-sm font-semibold text-white mb-3">What Will Be Generated</h3>
-              <div className="space-y-2 text-sm text-slate-400">
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="text-blue-400">Multiple Choice</span>
-                  <span className="text-slate-500">questions</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="text-green-400">True/False</span>
-                  <span className="text-slate-500">statements</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span className="text-purple-400">Flashcards</span>
-                  <span className="text-slate-500">for review</span>
-                </div>
+              <h3 className="text-sm font-semibold text-white mb-3">What to Generate</h3>
+              <div className="space-y-2">
+                <label 
+                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
+                    selectedGenerationType === 'multiple_choice' 
+                      ? 'border-blue-500 bg-blue-500/10' 
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="generationType"
+                    value="multiple_choice"
+                    checked={selectedGenerationType === 'multiple_choice'}
+                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
+                    className="sr-only"
+                  />
+                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                    selectedGenerationType === 'multiple_choice' 
+                      ? 'border-blue-500' 
+                      : 'border-slate-500'
+                  }`}>
+                    {selectedGenerationType === 'multiple_choice' && (
+                      <div className="w-2 h-2 rounded-full bg-blue-500" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-blue-400 font-medium">Multiple Choice</span>
+                    <p className="text-xs text-slate-500 mt-0.5">A, B, C, D answer options</p>
+                  </div>
+                </label>
+                
+                <label 
+                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
+                    selectedGenerationType === 'true_false' 
+                      ? 'border-green-500 bg-green-500/10' 
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="generationType"
+                    value="true_false"
+                    checked={selectedGenerationType === 'true_false'}
+                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
+                    className="sr-only"
+                  />
+                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                    selectedGenerationType === 'true_false' 
+                      ? 'border-green-500' 
+                      : 'border-slate-500'
+                  }`}>
+                    {selectedGenerationType === 'true_false' && (
+                      <div className="w-2 h-2 rounded-full bg-green-500" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-green-400 font-medium">True / False</span>
+                    <p className="text-xs text-slate-500 mt-0.5">Statement verification questions</p>
+                  </div>
+                </label>
+                
+                <label 
+                  className={`flex items-center gap-3 p-3 border cursor-pointer transition ${
+                    selectedGenerationType === 'flashcards' 
+                      ? 'border-purple-500 bg-purple-500/10' 
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="generationType"
+                    value="flashcards"
+                    checked={selectedGenerationType === 'flashcards'}
+                    onChange={(e) => setSelectedGenerationType(e.target.value as GenerationType)}
+                    className="sr-only"
+                  />
+                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                    selectedGenerationType === 'flashcards' 
+                      ? 'border-purple-500' 
+                      : 'border-slate-500'
+                  }`}>
+                    {selectedGenerationType === 'flashcards' && (
+                      <div className="w-2 h-2 rounded-full bg-purple-500" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-purple-400 font-medium">Flashcards</span>
+                    <p className="text-xs text-slate-500 mt-0.5">Front/back cards for memorization</p>
+                  </div>
+                </label>
               </div>
-              <p className="text-slate-500 text-xs mt-3">All 3 types will be created for your practice set</p>
             </div>
 
             {/* Generate button */}
@@ -2366,14 +2737,16 @@ export default function PracticePage() {
               {isGenerating ? (
                 <>
                   <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
-                  Generating... (this may take 1-3 minutes)
+                  Generating...
                 </>
               ) : (
                 <>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  Create Practice Set
+                  {selectedGenerationType === 'multiple_choice' && 'Generate Multiple Choice'}
+                  {selectedGenerationType === 'true_false' && 'Generate True/False'}
+                  {selectedGenerationType === 'flashcards' && 'Generate Flashcards'}
                 </>
               )}
             </button>
@@ -2383,8 +2756,7 @@ export default function PracticePage() {
               <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
                 <p className="font-medium mb-1">🎯 {generationStatus || 'Generating your practice set...'}</p>
                 <p className="text-xs text-indigo-300/80">
-                  Creating Multiple Choice, True/False, and Flashcards. This typically takes 2-5 minutes.
-                  For large content selections, it may take longer.
+                  This typically takes 1-2 minutes. For large content selections, it may take longer.
                 </p>
               </div>
             )}
