@@ -7,6 +7,7 @@ import { useData } from "@/app/context/DataContext";
 import {
   foldersApi,
   practiceApi,
+  materialsApi,
   type Folder,
   type MaterialSection,
   type GeneratedQuiz,
@@ -17,6 +18,9 @@ import {
   type SavedQuiz,
   type SavedFlashcardSet,
   type PracticeOverview,
+  type SectionStructure,
+  type MaterialStructure,
+  type MaterialChapter,
 } from "@/lib/api";
 
 // View modes for the practice page
@@ -67,6 +71,13 @@ export default function PracticePage() {
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
   const [selectedMaterials, setSelectedMaterials] = useState<Set<string>>(new Set());
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  
+  // Chapter selection state for granular quiz generation
+  const [sectionStructures, setSectionStructures] = useState<Map<string, SectionStructure>>(new Map());
+  const [loadingStructures, setLoadingStructures] = useState<Set<string>>(new Set());
+  // Map: materialId -> Set of selected chapter numbers (empty set = all chapters)
+  const [selectedChapters, setSelectedChapters] = useState<Map<string, Set<number>>>(new Map());
+  const [expandedMaterials, setExpandedMaterials] = useState<Set<string>>(new Set());
   
   // Practice set generation state
   const [isGenerating, setIsGenerating] = useState(false);
@@ -178,6 +189,54 @@ export default function PracticePage() {
       setExpandedFolders(allFolderIds);
     }
   }, [viewMode, materialFolders]);
+
+  // Load section structures when materials are selected
+  useEffect(() => {
+    const loadStructures = async () => {
+      // Collect all section IDs from selected materials
+      const sectionIds = new Set<string>();
+      
+      // From individually selected materials
+      selectedMaterials.forEach(sectionId => {
+        sectionIds.add(sectionId);
+      });
+      
+      // From selected folders
+      selectedFolders.forEach(folderId => {
+        const folder = findFolderById(materialFolders, folderId);
+        if (folder) {
+          const collectSections = (f: Folder) => {
+            f.sections.forEach(s => sectionIds.add(s.id));
+            f.subfolders.forEach(sf => collectSections(sf));
+          };
+          collectSections(folder);
+        }
+      });
+
+      // Load structure for each section that we don't have yet
+      for (const sectionId of sectionIds) {
+        if (!sectionStructures.has(sectionId) && !loadingStructures.has(sectionId)) {
+          setLoadingStructures(prev => new Set(prev).add(sectionId));
+          try {
+            const structure = await materialsApi.getSectionStructure(sectionId);
+            setSectionStructures(prev => new Map(prev).set(sectionId, structure));
+          } catch (err) {
+            console.error('Failed to load section structure:', err);
+          } finally {
+            setLoadingStructures(prev => {
+              const next = new Set(prev);
+              next.delete(sectionId);
+              return next;
+            });
+          }
+        }
+      }
+    };
+
+    if (viewMode === 'generate' && (selectedMaterials.size > 0 || selectedFolders.size > 0)) {
+      loadStructures();
+    }
+  }, [viewMode, selectedMaterials, selectedFolders, materialFolders, sectionStructures, loadingStructures]);
 
   // Auto-read first question/card when entering quiz/flashcard mode with voice agent open
   const prevViewModeRef = useRef<ViewMode>(viewMode);
@@ -647,7 +706,99 @@ export default function PracticePage() {
   const clearSelection = () => {
     setSelectedFolders(new Set());
     setSelectedMaterials(new Set());
+    setSelectedChapters(new Map());
+    setExpandedMaterials(new Set());
   };
+
+  // Toggle chapter selection for a material
+  const toggleChapterSelection = (materialId: string, chapterNum: number) => {
+    setSelectedChapters(prev => {
+      const next = new Map(prev);
+      const currentChapters = next.get(materialId) || new Set<number>();
+      const newChapters = new Set(currentChapters);
+      
+      if (newChapters.has(chapterNum)) {
+        newChapters.delete(chapterNum);
+      } else {
+        newChapters.add(chapterNum);
+      }
+      
+      if (newChapters.size === 0) {
+        next.delete(materialId);
+      } else {
+        next.set(materialId, newChapters);
+      }
+      
+      return next;
+    });
+  };
+
+  // Select all chapters for a material
+  const selectAllChapters = (materialId: string, chapters: MaterialChapter[]) => {
+    setSelectedChapters(prev => {
+      const next = new Map(prev);
+      next.set(materialId, new Set(chapters.map(ch => ch.number)));
+      return next;
+    });
+  };
+
+  // Clear chapter selection for a material (use all chapters)
+  const clearChapterSelection = (materialId: string) => {
+    setSelectedChapters(prev => {
+      const next = new Map(prev);
+      next.delete(materialId);
+      return next;
+    });
+  };
+
+  // Toggle material expansion for chapter view
+  const toggleMaterialExpansion = (materialId: string) => {
+    setExpandedMaterials(prev => {
+      const next = new Set(prev);
+      if (next.has(materialId)) {
+        next.delete(materialId);
+      } else {
+        next.add(materialId);
+      }
+      return next;
+    });
+  };
+
+  // Check if material has chapters selected (for filtering)
+  const hasChapterFilter = selectedChapters.size > 0;
+
+  // Get all materials with chapters from selected sections
+  const materialsWithChapters = useMemo(() => {
+    const result: MaterialStructure[] = [];
+    
+    // Collect all section IDs
+    const sectionIds = new Set<string>();
+    selectedMaterials.forEach(id => sectionIds.add(id));
+    selectedFolders.forEach(folderId => {
+      const folder = findFolderById(materialFolders, folderId);
+      if (folder) {
+        const collectSections = (f: Folder) => {
+          f.sections.forEach(s => sectionIds.add(s.id));
+          f.subfolders.forEach(sf => collectSections(sf));
+        };
+        collectSections(folder);
+      }
+    });
+
+    // Get materials with chapters from structures
+    sectionIds.forEach(sectionId => {
+      const structure = sectionStructures.get(sectionId);
+      if (structure) {
+        structure.materials.forEach(mat => {
+          if (mat.hasChapters && mat.chapters.length > 0) {
+            result.push(mat);
+          }
+        });
+      }
+    });
+
+    return result;
+  }, [selectedMaterials, selectedFolders, materialFolders, sectionStructures]);
 
   // Helper to find folder by ID
   const findFolderById = (folderList: Folder[], folderId: string): Folder | null => {
@@ -729,6 +880,18 @@ export default function PracticePage() {
       // Generate ALL 3 types for the practice set
       const baseName = practiceNameInput || `Practice Set - ${new Date().toISOString().split('T')[0]}`;
       
+      // Build chapter filter if any chapters are selected
+      const chapterFilter = selectedChapters.size > 0 
+        ? Array.from(selectedChapters.entries()).map(([materialId, chapters]) => ({
+            materialId,
+            chapters: Array.from(chapters)
+          }))
+        : undefined;
+
+      if (chapterFilter) {
+        console.log('[Generate] Using chapter filter:', chapterFilter);
+      }
+      
       // 1. Generate Multiple Choice questions
       setGenerationStatus('Generating Multiple Choice questions...');
       const mcQuiz = await practiceApi.generateQuiz({
@@ -740,6 +903,7 @@ export default function PracticePage() {
         name: `${baseName} (Multiple Choice)`,
         folderId: saveToPracticeFolder || undefined,
         onProgress: (msg) => setGenerationStatus(`Multiple Choice: ${msg}`),
+        chapterFilter,
       });
       
       // 2. Generate True/False questions
@@ -753,14 +917,16 @@ export default function PracticePage() {
         name: `${baseName} (True/False)`,
         folderId: saveToPracticeFolder || undefined,
         onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
+        chapterFilter,
       });
       
-      // 3. Generate Flashcards
-      setGenerationStatus('Generating Flashcards...');
-      const flashcardSet = await practiceApi.generateFlashcards({
-        sectionIds,
+      // 3. Derive Flashcards from Multiple Choice questions
+      // Uses the MC question as front, correct answer text as back
+      setGenerationStatus('Creating Flashcards from questions...');
+      const flashcardSet = await practiceApi.deriveFlashcardsFromQuiz({
+        questions: mcQuiz.questions,
         userId,
-        count: parsedSetSize,
+        sectionIds,
         name: `${baseName} (Flashcards)`,
         folderId: saveToPracticeFolder || undefined,
       });
@@ -1471,12 +1637,12 @@ export default function PracticePage() {
               onProgress: (msg) => setGenerationStatus(`True/False: ${msg}`),
             });
             
-            // 3. Flashcards
-            setGenerationStatus('Generating Flashcards...');
-            await practiceApi.generateFlashcards({
-              sectionIds,
+            // 3. Derive Flashcards from Multiple Choice questions
+            setGenerationStatus('Creating Flashcards from questions...');
+            await practiceApi.deriveFlashcardsFromQuiz({
+              questions: mcQuiz.questions,
               userId: userId!,
-              count: parsedCount,
+              sectionIds,
               name: `${baseName} (Flashcards)`,
               folderId: folderId || undefined,
             });
@@ -2322,6 +2488,120 @@ export default function PracticePage() {
               </div>
               <p className="text-slate-500 text-xs mt-2">Min: 5, Max: 100</p>
             </div>
+
+            {/* Chapter selection - only show when materials with chapters are selected */}
+            {materialsWithChapters.length > 0 && (
+              <div className="border border-slate-800 bg-black p-4 max-h-64 overflow-y-auto">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-white">Filter by Chapters</h3>
+                  {hasChapterFilter && (
+                    <button
+                      onClick={() => setSelectedChapters(new Map())}
+                      className="text-xs text-slate-400 hover:text-white transition cursor-pointer"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+                <p className="text-slate-500 text-xs mb-3">
+                  {hasChapterFilter 
+                    ? `Filtering by ${Array.from(selectedChapters.values()).reduce((sum, s) => sum + s.size, 0)} selected chapter(s)` 
+                    : 'Select specific chapters or leave empty to use all content'}
+                </p>
+                
+                <div className="space-y-3">
+                  {materialsWithChapters.map(material => {
+                    const isExpanded = expandedMaterials.has(material.id);
+                    const materialSelectedChapters = selectedChapters.get(material.id);
+                    const hasFilter = materialSelectedChapters && materialSelectedChapters.size > 0;
+                    
+                    return (
+                      <div key={material.id} className="border border-slate-700 bg-slate-900/50">
+                        <button
+                          onClick={() => toggleMaterialExpansion(material.id)}
+                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/50 transition cursor-pointer"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                            <span className="text-sm text-white truncate">{material.title || material.fileName}</span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {hasFilter && (
+                              <span className="text-xs bg-indigo-600 px-1.5 py-0.5 rounded text-white">
+                                {materialSelectedChapters.size}/{material.chapters.length}
+                              </span>
+                            )}
+                            <span className="text-xs text-slate-500">{material.chapters.length} ch</span>
+                          </div>
+                        </button>
+                        
+                        {isExpanded && (
+                          <div className="px-3 pb-3 pt-1 border-t border-slate-700">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs text-slate-400">Select chapters:</span>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => selectAllChapters(material.id, material.chapters)}
+                                  className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                                >
+                                  All
+                                </button>
+                                <span className="text-slate-600">|</span>
+                                <button
+                                  onClick={() => clearChapterSelection(material.id)}
+                                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                                >
+                                  None
+                                </button>
+                              </div>
+                            </div>
+                            <div className="space-y-1 max-h-32 overflow-y-auto">
+                              {material.chapters.map(chapter => {
+                                const isSelected = materialSelectedChapters?.has(chapter.number) || false;
+                                return (
+                                  <label
+                                    key={chapter.number}
+                                    className="flex items-center gap-2 px-2 py-1.5 hover:bg-slate-800/50 cursor-pointer group"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => toggleChapterSelection(material.id, chapter.number)}
+                                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <span className="text-sm text-white group-hover:text-indigo-300 transition">
+                                        {chapter.isGeneratedTopic ? '' : `Ch ${chapter.number}: `}{chapter.title}
+                                      </span>
+                                      <span className="text-xs text-slate-500 ml-2">({chapter.percentage})</span>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                {loadingStructures.size > 0 && (
+                  <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
+                    <div className="animate-spin h-3 w-3 border-2 border-slate-400 border-t-transparent rounded-full" />
+                    Loading chapter information...
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Save to folder */}
             <div className="border border-slate-800 bg-black p-4">

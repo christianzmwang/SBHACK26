@@ -9,6 +9,7 @@ import { query, transaction } from '../config/database.js';
 import {
   generateQuizFromSections,
   generateFlashcardsFromSections,
+  deriveFlashcardsFromQuiz,
   getQuiz,
   getFlashcardSet,
   getQuizzesByUser,
@@ -300,7 +301,7 @@ router.get('/overview', async (req, res) => {
  */
 router.post('/quizzes/generate', async (req, res) => {
   try {
-    const { sectionIds, userId, questionCount, questionType, difficulty, name, folderId, description, stream } = req.body;
+    const { sectionIds, userId, questionCount, questionType, difficulty, name, folderId, description, stream, chapterFilter } = req.body;
     const isStreaming = req.query.stream === 'true' || stream === true;
 
     if (!sectionIds || sectionIds.length === 0) {
@@ -319,7 +320,8 @@ router.post('/quizzes/generate', async (req, res) => {
       difficulty: difficulty || 'mixed',
       name,
       folderId,
-      description
+      description,
+      chapterFilter  // Filter by specific chapters per material
     };
 
     if (isStreaming) {
@@ -550,7 +552,7 @@ router.get('/quizzes/:quizId/attempts', async (req, res) => {
  */
 router.post('/flashcards/generate', async (req, res) => {
   try {
-    const { sectionIds, userId, count, topic, name, folderId, description } = req.body;
+    const { sectionIds, userId, count, topic, name, folderId, description, chapterFilter } = req.body;
 
     if (!sectionIds || sectionIds.length === 0) {
       return res.status(400).json({ error: 'At least one section ID is required' });
@@ -567,7 +569,8 @@ router.post('/flashcards/generate', async (req, res) => {
       topic,
       name,
       folderId,
-      description
+      description,
+      chapterFilter  // Filter by specific chapters per material
     });
 
     res.status(201).json({
@@ -576,6 +579,42 @@ router.post('/flashcards/generate', async (req, res) => {
     });
   } catch (error) {
     console.error('Error generating flashcards:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Derive flashcards from a quiz's multiple choice questions
+ * POST /api/practice/flashcards/from-quiz
+ */
+router.post('/flashcards/from-quiz', async (req, res) => {
+  try {
+    const { quizId, questions, userId, sectionIds, name, folderId, description } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    if (!quizId && (!questions || questions.length === 0)) {
+      return res.status(400).json({ error: 'Either quizId or questions array is required' });
+    }
+
+    const result = await deriveFlashcardsFromQuiz({
+      quizId,
+      questions,
+      userId,
+      sectionIds,
+      name,
+      folderId,
+      description
+    });
+
+    res.status(201).json({
+      success: true,
+      flashcardSet: result
+    });
+  } catch (error) {
+    console.error('Error deriving flashcards from quiz:', error);
     res.status(500).json({ error: error.message });
   }
 });

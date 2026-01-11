@@ -66,6 +66,42 @@ export interface FlashcardSet {
   cards?: Flashcard[];
 }
 
+// Material Structure Types (for chapter/topic selection)
+export interface MaterialChapter {
+  number: number;
+  title: string;
+  description?: string;
+  isGeneratedTopic?: boolean;
+  chunkCount: number;
+  percentage: string;
+  topics: string[];
+}
+
+export interface MaterialTopicSummary {
+  totalChunks: number;
+  embeddedChunks: number;
+  estimatedClusters: number;
+  topics: string[];
+  message: string;
+}
+
+export interface MaterialStructure {
+  id: string;
+  title: string;
+  fileName: string;
+  totalChunks: number;
+  hasChapters: boolean;
+  chapters: MaterialChapter[];
+  topicSummary?: MaterialTopicSummary;
+}
+
+export interface SectionStructure {
+  materials: MaterialStructure[];
+  totalChunks: number;
+  materialsWithChapters: number;
+  totalMaterials: number;
+}
+
 // API Error handling
 class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -160,6 +196,16 @@ export const materialsApi = {
     });
     const data = await handleResponse<{ results: Array<{ id: string; content: string; similarity: number }> }>(response);
     return data.results;
+  },
+
+  /**
+   * Get the structure (chapters/topics) for all materials in a section
+   * Used for chapter-specific quiz generation
+   */
+  async getSectionStructure(sectionId: string): Promise<SectionStructure> {
+    const response = await fetch(`${API_BASE}/materials/section/${sectionId}/structure`);
+    const data = await handleResponse<{ structure: SectionStructure }>(response);
+    return data.structure;
   },
 };
 
@@ -369,6 +415,7 @@ export const practiceApi = {
     folderId?: string;
     description?: string;
     onProgress?: (message: string) => void;
+    chapterFilter?: Array<{ materialId: string; chapters: number[] }>;  // Filter by specific chapters
   }): Promise<GeneratedQuiz> {
     // Use direct backend URL to bypass Next.js proxy timeout
     // LLM-based generation can take 30-90+ seconds
@@ -511,6 +558,7 @@ export const practiceApi = {
     name?: string;
     folderId?: string;
     description?: string;
+    chapterFilter?: Array<{ materialId: string; chapters: number[] }>;  // Filter by specific chapters
   }): Promise<GeneratedFlashcardSet> {
     // Use direct backend URL to bypass Next.js proxy timeout
     // LLM-based generation can take 30-90+ seconds
@@ -534,6 +582,28 @@ export const practiceApi = {
       }
       throw err;
     }
+  },
+
+  /**
+   * Derive flashcards from multiple choice quiz questions
+   * Front = question text, Back = correct answer text
+   */
+  async deriveFlashcardsFromQuiz(options: {
+    quizId?: string;
+    questions?: Question[];
+    userId: string;
+    sectionIds?: string[];
+    name?: string;
+    folderId?: string;
+    description?: string;
+  }): Promise<GeneratedFlashcardSet> {
+    const response = await fetch(`${BACKEND_API}/practice/flashcards/from-quiz`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    });
+    const data = await handleResponse<{ flashcardSet: GeneratedFlashcardSet }>(response);
+    return data.flashcardSet;
   },
 
   async getFlashcardSet(setId: string): Promise<FlashcardSet & { cards: Flashcard[] }> {
@@ -767,44 +837,15 @@ export const foldersApi = {
     return { file: data.file };
   },
 
-  async getContentStructure(sectionId: string): Promise<ContentStructure> {
+  async getContentStructure(sectionId: string): Promise<SectionStructure> {
     const response = await fetch(`${API_BASE}/materials/section/${sectionId}/structure`);
-    const data = await handleResponse<{ success: boolean; structure: ContentStructure }>(response);
+    const data = await handleResponse<{ success: boolean; structure: SectionStructure }>(response);
     return data.structure;
   },
 };
 
-// Content structure types - per material breakdown
-export interface MaterialStructure {
-  id: string;
-  title: string;
-  fileName: string;
-  totalChunks: number;
-  hasChapters: boolean;
-  chapters: {
-    number: number;
-    title: string;
-    description?: string;
-    isGeneratedTopic?: boolean;
-    chunkCount: number;
-    percentage: string;
-    topics: string[];
-  }[];
-  topicSummary: {
-    totalChunks: number;
-    embeddedChunks: number;
-    estimatedClusters: number;
-    message: string;
-    topics?: string[];
-  } | null;
-}
-
-export interface ContentStructure {
-  materials: MaterialStructure[];
-  totalChunks: number;
-  materialsWithChapters: number;
-  totalMaterials: number;
-}
+// Content structure types (re-export for backward compatibility)
+// The main types are defined at the top of the file: MaterialStructure, SectionStructure, etc.
 
 // Health check
 export const healthApi = {

@@ -422,20 +422,79 @@ const generateQuestionsForCluster = async (cluster, options) => {
       // Validate and normalize questions
       const validQuestions = questions
         .filter(q => (q.question && q.question.trim()) || (q.front && q.front.trim()))
-        .map(q => ({
-          question: q.question?.trim(),
-          front: q.front?.trim(),
-          back: q.back?.trim(),
-          questionType: questionType,
-          options: questionType === 'multiple_choice' ? (q.options || null) : null,
-          correctAnswer: q.correct_answer || q.correctAnswer || null,
-          explanation: q.explanation || null,
-          difficulty: q.difficulty || difficulty,
-          topic: q.topic || null,
-          chapter: q.chapter || null,
-          sourceChunkIds: contentChunks.slice(0, 3).map(c => c.id),
-          clusterIndex
-        }));
+        .map(q => {
+          // Normalize options for multiple choice questions
+          let normalizedOptions = null;
+          if (questionType === 'multiple_choice') {
+            if (q.options && typeof q.options === 'object') {
+              // Ensure options is an object with A, B, C, D keys
+              normalizedOptions = {
+                A: q.options.A || q.options.a || q.options['1'] || '',
+                B: q.options.B || q.options.b || q.options['2'] || '',
+                C: q.options.C || q.options.c || q.options['3'] || '',
+                D: q.options.D || q.options.d || q.options['4'] || ''
+              };
+              // Validate that we have actual options
+              const hasValidOptions = Object.values(normalizedOptions).some(v => v && v.trim());
+              if (!hasValidOptions) {
+                console.warn(`[Cluster ${clusterIndex + 1}] Question has empty options:`, q.question?.substring(0, 50));
+                normalizedOptions = null;
+              }
+            } else if (Array.isArray(q.options) && q.options.length >= 4) {
+              // Handle array format [option1, option2, option3, option4]
+              normalizedOptions = {
+                A: q.options[0] || '',
+                B: q.options[1] || '',
+                C: q.options[2] || '',
+                D: q.options[3] || ''
+              };
+            }
+          }
+
+          // Normalize correct answer
+          let correctAnswer = q.correct_answer || q.correctAnswer || null;
+          if (questionType === 'true_false' && correctAnswer) {
+            // Ensure true/false answers are lowercase
+            correctAnswer = String(correctAnswer).toLowerCase();
+            if (correctAnswer !== 'true' && correctAnswer !== 'false') {
+              // Try to interpret the answer
+              if (['yes', 't', '1'].includes(correctAnswer)) {
+                correctAnswer = 'true';
+              } else if (['no', 'f', '0'].includes(correctAnswer)) {
+                correctAnswer = 'false';
+              }
+            }
+          } else if (questionType === 'multiple_choice' && correctAnswer) {
+            // Ensure correct answer is uppercase A, B, C, or D
+            correctAnswer = String(correctAnswer).toUpperCase().trim();
+            if (!['A', 'B', 'C', 'D'].includes(correctAnswer)) {
+              console.warn(`[Cluster ${clusterIndex + 1}] Invalid correct answer "${correctAnswer}" for MC question`);
+            }
+          }
+
+          return {
+            question: q.question?.trim(),
+            front: q.front?.trim(),
+            back: q.back?.trim(),
+            questionType: questionType,
+            options: normalizedOptions,
+            correctAnswer: correctAnswer,
+            explanation: q.explanation || null,
+            difficulty: q.difficulty || difficulty,
+            topic: q.topic || null,
+            chapter: q.chapter || null,
+            sourceChunkIds: contentChunks.slice(0, 3).map(c => c.id),
+            clusterIndex
+          };
+        })
+        // Filter out multiple choice questions without valid options
+        .filter(q => {
+          if (q.questionType === 'multiple_choice' && !q.options) {
+            console.warn(`[Cluster ${clusterIndex + 1}] Filtering out MC question without options:`, q.question?.substring(0, 50));
+            return false;
+          }
+          return true;
+        });
 
       if (validQuestions.length === 0) {
         console.warn(`[Cluster ${clusterIndex + 1}] Generated 0 valid questions. Raw response preview: ${response.substring(0, 200)}...`);
@@ -498,38 +557,78 @@ const buildQuestionPrompt = (options, contextContent) => {
   let formatGuide;
   if (questionType === 'multiple_choice') {
     formatGuide = `Generate exactly ${count} multiple-choice questions.
-Each question must have:
-- A clear question asking about a fact or concept
-- 4 options (A, B, C, D)
-- One correct answer
-- A brief explanation
 
-JSON format:
+REQUIREMENTS FOR EACH QUESTION:
+- A clear question asking about a specific fact, concept, or relationship
+- EXACTLY 4 answer options labeled A, B, C, D
+- Each option must be a distinct, plausible answer (no obviously wrong options)
+- One and only one correct answer (A, B, C, or D)
+- A brief explanation of why the correct answer is right
+
+CRITICAL: You MUST include the "options" field as an object with keys "A", "B", "C", "D".
+
+JSON format (follow EXACTLY):
 [
   {
-    "question": "What is the primary function of mitochondria?",
-    "options": {"A": "Energy production", "B": "Protein synthesis", "C": "Waste removal", "D": "Cell division"},
+    "question": "What is the primary function of mitochondria in eukaryotic cells?",
+    "options": {
+      "A": "Energy production through ATP synthesis",
+      "B": "Protein synthesis and folding",
+      "C": "Waste removal and detoxification",
+      "D": "Cell division and reproduction"
+    },
     "correct_answer": "A",
-    "explanation": "Mitochondria are known as the powerhouse of the cell because they generate most of the cell's supply of adenosine triphosphate (ATP).",
+    "explanation": "Mitochondria are known as the powerhouse of the cell because they generate most of the cell's ATP through oxidative phosphorylation.",
     "difficulty": "medium",
+    "topic": "Cell Biology"
+  },
+  {
+    "question": "Which process occurs in the inner mitochondrial membrane?",
+    "options": {
+      "A": "Glycolysis",
+      "B": "Electron transport chain",
+      "C": "DNA replication",
+      "D": "Transcription"
+    },
+    "correct_answer": "B",
+    "explanation": "The electron transport chain is located in the inner mitochondrial membrane where it generates the proton gradient used for ATP synthesis.",
+    "difficulty": "hard",
     "topic": "Cell Biology"
   }
 ]`;
   } else if (questionType === 'true_false') {
     formatGuide = `Generate exactly ${count} true/false questions.
-Each question must be a DECLARATIVE STATEMENT.
-- Do NOT ask a question (e.g. "Is the sky blue?").
-- Do NOT provide options (A, B, C, D).
-- State a fact that is either clearly true or clearly false.
-- Provide the correct answer ("true" or "false").
-- Provide a brief explanation.
 
-JSON format:
+REQUIREMENTS FOR EACH QUESTION:
+- The "question" field MUST be a DECLARATIVE STATEMENT (a sentence that states something as fact)
+- Do NOT phrase as a question (no "Is...", "Does...", "Can...", etc.)
+- Do NOT include options - only the statement
+- The statement should be clearly true or clearly false based on the source material
+- Include a mix of true and false statements (roughly 50/50)
+- The "correct_answer" must be exactly "true" or "false" (lowercase)
+- Include an explanation of why the statement is true or false
+
+EXAMPLES OF GOOD STATEMENTS:
+✅ "Mitochondria are responsible for protein synthesis." (false)
+✅ "The electron transport chain occurs in the inner mitochondrial membrane." (true)
+✅ "ATP is produced during glycolysis in the mitochondria." (false - glycolysis occurs in cytoplasm)
+
+EXAMPLES OF BAD STATEMENTS:
+❌ "Is the mitochondria responsible for energy production?" (this is a question, not a statement)
+❌ "True or False: Mitochondria produce ATP" (don't include "True or False" prefix)
+
+JSON format (follow EXACTLY):
 [
   {
-    "question": "Mitochondria are responsible for protein synthesis.",
+    "question": "Mitochondria are responsible for protein synthesis in cells.",
     "correct_answer": "false",
-    "explanation": "Ribosomes are responsible for protein synthesis, while mitochondria generate energy.",
+    "explanation": "Ribosomes are responsible for protein synthesis, while mitochondria are responsible for ATP production through cellular respiration.",
+    "difficulty": "medium"
+  },
+  {
+    "question": "The inner mitochondrial membrane contains the electron transport chain.",
+    "correct_answer": "true",
+    "explanation": "The electron transport chain is embedded in the inner mitochondrial membrane, where it creates a proton gradient for ATP synthesis.",
     "difficulty": "medium"
   }
 ]`;
@@ -575,7 +674,7 @@ ${contextContent}
 
 INSTRUCTIONS:
 1. Extract key facts, concepts, and relationships from the SOURCE CONTENT above.
-2. Create ${count} ${questionType} questions based on these facts.
+2. Create ${count} ${questionType.replace('_', ' ')} questions based on these facts.
 
 CRITICAL RULES (VIOLATION = FAILURE):
 1. QUESTIONS MUST BE STANDALONE. They must make sense to someone who has never seen the source text but knows the subject.
@@ -585,7 +684,6 @@ CRITICAL RULES (VIOLATION = FAILURE):
    - ❌ BAD: "As mentioned in the passage..."
    - ✅ GOOD: "What is..."
    - ✅ GOOD: "Which factor contributes to..."
-   - ✅ GOOD: "True or False: X causes Y."
 3. Test CONCEPTS and KNOWLEDGE, not reading comprehension.
    - ❌ BAD: "What does the second paragraph say about X?"
    - ✅ GOOD: "How does X affect Y?"
@@ -596,7 +694,7 @@ ${mathGuide}
 ${formatGuide}
 
 RESPONSE FORMAT:
-Respond with ONLY the valid JSON array. No other text.`;
+Respond with ONLY the valid JSON array. No markdown code blocks, no explanatory text. Just the raw JSON array starting with [ and ending with ].`;
 };
 
 /**
@@ -700,6 +798,9 @@ const deduplicateQuestions = async (questions) => {
 
 /**
  * Generate a quiz with balanced chapter coverage
+ * 
+ * @param options.chapterFilter - Optional: Array of { materialId, chapters: number[] } to filter by specific chapters
+ *                                Example: [{ materialId: 'uuid', chapters: [1, 3, 5] }]
  */
 export const generateQuizFromSections = async (options, onProgress) => {
   const {
@@ -710,7 +811,8 @@ export const generateQuizFromSections = async (options, onProgress) => {
     difficulty = 'mixed',
     name = null,
     folderId = null,
-    description = null
+    description = null,
+    chapterFilter = null  // New: filter by specific chapters per material
   } = options;
 
   if (onProgress) onProgress("Starting quiz generation...");
@@ -739,11 +841,43 @@ export const generateQuizFromSections = async (options, onProgress) => {
 
   // 2. Get all chunks for materials
   if (onProgress) onProgress("Processing document content...");
-  const allChunks = await getAllChunksForMaterials(materialIds);
+  let allChunks = await getAllChunksForMaterials(materialIds);
   console.log(`[QuizGen] Retrieved ${allChunks.length} chunks with embeddings`);
 
   if (allChunks.length === 0) {
     throw new Error('No content chunks found in the selected materials.');
+  }
+
+  // 2.5. Apply chapter filter if provided
+  if (chapterFilter && Array.isArray(chapterFilter) && chapterFilter.length > 0) {
+    const filterMap = new Map();
+    for (const filter of chapterFilter) {
+      if (filter.materialId && Array.isArray(filter.chapters) && filter.chapters.length > 0) {
+        filterMap.set(filter.materialId, new Set(filter.chapters));
+      }
+    }
+
+    if (filterMap.size > 0) {
+      const beforeCount = allChunks.length;
+      allChunks = allChunks.filter(chunk => {
+        const allowedChapters = filterMap.get(chunk.material_id);
+        if (!allowedChapters) {
+          // Material not in filter - include all its chunks if not filtered
+          // Only filter if this material is explicitly in the filter list
+          return !filterMap.has(chunk.material_id);
+        }
+        // Check if chunk's chapter is in the allowed list
+        const chunkChapter = chunk.metadata?.chapter;
+        return chunkChapter && allowedChapters.has(chunkChapter);
+      });
+      
+      console.log(`[QuizGen] Chapter filter applied: ${beforeCount} → ${allChunks.length} chunks`);
+      console.log(`[QuizGen] Filtering for chapters in ${filterMap.size} material(s)`);
+      
+      if (allChunks.length === 0) {
+        throw new Error('No content chunks found for the selected chapters. Please select different chapters or materials.');
+      }
+    }
   }
 
   // 3. Try to group chunks by chapter
@@ -1047,6 +1181,8 @@ export const generateQuizFromSections = async (options, onProgress) => {
 
 /**
  * Generate flashcards with balanced chapter coverage
+ * 
+ * @param options.chapterFilter - Optional: Array of { materialId, chapters: number[] } to filter by specific chapters
  */
 export const generateFlashcardsFromSections = async (options) => {
   const {
@@ -1056,7 +1192,8 @@ export const generateFlashcardsFromSections = async (options) => {
     topic = null,
     name = null,
     folderId = null,
-    description = null
+    description = null,
+    chapterFilter = null  // New: filter by specific chapters per material
   } = options;
 
   if (!sectionIds || sectionIds.length === 0) {
@@ -1080,10 +1217,38 @@ export const generateFlashcardsFromSections = async (options) => {
   }
 
   // 2. Get all chunks
-  const allChunks = await getAllChunksForMaterials(materialIds);
+  let allChunks = await getAllChunksForMaterials(materialIds);
   
   if (allChunks.length === 0) {
     throw new Error('No content chunks found in the selected materials.');
+  }
+
+  // 2.5. Apply chapter filter if provided
+  if (chapterFilter && Array.isArray(chapterFilter) && chapterFilter.length > 0) {
+    const filterMap = new Map();
+    for (const filter of chapterFilter) {
+      if (filter.materialId && Array.isArray(filter.chapters) && filter.chapters.length > 0) {
+        filterMap.set(filter.materialId, new Set(filter.chapters));
+      }
+    }
+
+    if (filterMap.size > 0) {
+      const beforeCount = allChunks.length;
+      allChunks = allChunks.filter(chunk => {
+        const allowedChapters = filterMap.get(chunk.material_id);
+        if (!allowedChapters) {
+          return !filterMap.has(chunk.material_id);
+        }
+        const chunkChapter = chunk.metadata?.chapter;
+        return chunkChapter && allowedChapters.has(chunkChapter);
+      });
+      
+      console.log(`[FlashcardGen] Chapter filter applied: ${beforeCount} → ${allChunks.length} chunks`);
+      
+      if (allChunks.length === 0) {
+        throw new Error('No content chunks found for the selected chapters. Please select different chapters or materials.');
+      }
+    }
   }
 
   // 3. Try to group by chapter, fall back to topic clustering
@@ -1411,6 +1576,101 @@ const storeFlashcards = async (options) => {
 };
 
 /**
+ * Derive flashcards from multiple choice questions
+ * Front = question text
+ * Back = the text of the correct answer option
+ */
+export const deriveFlashcardsFromQuiz = async (options) => {
+  const {
+    quizId = null,
+    questions = null,  // Can pass questions directly instead of quizId
+    userId,
+    sectionIds = [],
+    name = null,
+    folderId = null,
+    description = null
+  } = options;
+
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
+
+  let quizQuestions = questions;
+
+  // If quizId provided, fetch the questions
+  if (quizId && !quizQuestions) {
+    const quiz = await getQuiz(quizId);
+    if (!quiz) {
+      throw new Error('Quiz not found');
+    }
+    quizQuestions = quiz.questions;
+  }
+
+  if (!quizQuestions || quizQuestions.length === 0) {
+    throw new Error('No questions provided to derive flashcards from');
+  }
+
+  console.log(`[FlashcardDerive] Deriving ${quizQuestions.length} flashcards from quiz questions`);
+
+  // Convert each MC question to a flashcard
+  const flashcards = quizQuestions
+    .filter(q => q.question && q.options && q.correct_answer)
+    .map(q => {
+      // Get the correct answer text from the options
+      const correctAnswerKey = q.correct_answer || q.correctAnswer;
+      let correctAnswerText = '';
+      
+      if (q.options && correctAnswerKey) {
+        // Handle both object and parsed JSON string options
+        const opts = typeof q.options === 'string' ? JSON.parse(q.options) : q.options;
+        correctAnswerText = opts[correctAnswerKey] || opts[correctAnswerKey.toLowerCase()] || '';
+      }
+
+      // If we couldn't get the answer text, use the explanation as fallback
+      if (!correctAnswerText && q.explanation) {
+        correctAnswerText = q.explanation;
+      }
+
+      return {
+        front: q.question,
+        back: correctAnswerText || `Answer: ${correctAnswerKey}`,
+        topic: q.topic,
+        chapter: q.chapter,
+        difficulty: q.difficulty
+      };
+    })
+    .filter(card => card.front && card.back);
+
+  if (flashcards.length === 0) {
+    throw new Error('Could not derive any valid flashcards from the quiz questions');
+  }
+
+  console.log(`[FlashcardDerive] Created ${flashcards.length} flashcards`);
+
+  // Store in database
+  const setName = name || `Flashcards - ${new Date().toISOString().split('T')[0]}`;
+  const flashcardSetId = await storeFlashcards({
+    userId,
+    sectionIds,
+    name: setName,
+    flashcards,
+    folderId,
+    description
+  });
+
+  console.log(`[FlashcardDerive] Saved flashcard set with ID: ${flashcardSetId}`);
+
+  return {
+    flashcardSetId,
+    name: setName,
+    description,
+    folderId,
+    count: flashcards.length,
+    flashcards
+  };
+};
+
+/**
  * Get quiz by ID
  */
 export const getQuiz = async (quizId) => {
@@ -1514,6 +1774,7 @@ export const deleteFlashcardSet = async (setId) => {
 export default {
   generateQuizFromSections,
   generateFlashcardsFromSections,
+  deriveFlashcardsFromQuiz,
   getQuiz,
   getQuizzesByUser,
   getFlashcardSetsByUser,
