@@ -368,6 +368,7 @@ export const practiceApi = {
     name?: string;
     folderId?: string;
     description?: string;
+    onProgress?: (message: string) => void;
   }): Promise<GeneratedQuiz> {
     // Use direct backend URL to bypass Next.js proxy timeout
     // LLM-based generation can take 30-90+ seconds
@@ -375,15 +376,65 @@ export const practiceApi = {
     const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // Increased to 5 minutes
 
     try {
-      const response = await fetch(`${BACKEND_API}/practice/quizzes/generate`, {
+      const isStreaming = !!options.onProgress;
+      
+      const response = await fetch(`${BACKEND_API}/practice/quizzes/generate?stream=${isStreaming}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(options),
+        body: JSON.stringify({ ...options, stream: isStreaming }),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
-      const data = await handleResponse<{ quiz: GeneratedQuiz }>(response);
-      return data.quiz;
+
+      if (!isStreaming) {
+        clearTimeout(timeoutId);
+        const data = await handleResponse<{ quiz: GeneratedQuiz }>(response);
+        return data.quiz;
+      }
+
+      // Handle streaming response
+      if (!response.body) throw new Error('ReadableStream not supported');
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResult: GeneratedQuiz | null = null;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line
+          
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const data = JSON.parse(line);
+              if (data.type === 'progress' && options.onProgress) {
+                options.onProgress(data.message);
+              } else if (data.type === 'result') {
+                finalResult = data.quiz;
+              } else if (data.type === 'error') {
+                 throw new Error(data.error);
+              }
+            } catch (e) {
+               if (e instanceof Error && e.message !== 'Unexpected end of JSON input') {
+                 console.warn('Error parsing stream chunk:', e);
+               }
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+        clearTimeout(timeoutId);
+      }
+
+      if (!finalResult) {
+        throw new Error('No quiz result received from stream');
+      }
+      return finalResult;
     } catch (err) {
       clearTimeout(timeoutId);
       if (err instanceof Error && err.name === 'AbortError') {

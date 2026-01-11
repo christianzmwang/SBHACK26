@@ -17,18 +17,21 @@ import { callLLM } from './llmService.js';
 import { generateEmbedding, cosineSimilarity } from './embeddingService.js';
 
 // Configuration
-const CONCURRENCY_LIMIT = 8; // Reduced from 10 to avoid rate limits
-const MIN_CHUNKS_PER_GROUP = 2;
+const CONCURRENCY_LIMIT = 20; // Increased from 8 to speed up generation
+const MIN_CHUNKS_PER_GROUP = 1;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
-const DEFAULT_CLUSTER_COUNT = 6; // Reduced from default to speed up generation
+const DEFAULT_CLUSTER_COUNT = 6;
 
 /**
  * Run tasks in batches to respect rate limits
  */
-const runInBatches = async (items, batchSize, fn) => {
+const runInBatches = async (items, batchSize, fn, onProgress) => {
   const results = [];
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
+    if (onProgress) {
+        onProgress(`Processing batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(items.length / batchSize)}`);
+    }
     console.log(`[Batch] Processing items ${i + 1} to ${Math.min(i + batchSize, items.length)} of ${items.length}`);
     const batchResults = await Promise.all(
       batch.map((item, index) => fn(item, i + index))
@@ -764,7 +767,7 @@ const deduplicateQuestions = async (questions) => {
 /**
  * Generate a quiz with balanced chapter coverage
  */
-export const generateQuizFromSections = async (options) => {
+export const generateQuizFromSections = async (options, onProgress) => {
   const {
     sectionIds,
     userId,
@@ -775,6 +778,8 @@ export const generateQuizFromSections = async (options) => {
     folderId = null,
     description = null
   } = options;
+
+  if (onProgress) onProgress("Starting quiz generation...");
 
   if (!sectionIds || sectionIds.length === 0) {
     throw new Error('At least one section ID is required');
@@ -790,6 +795,7 @@ export const generateQuizFromSections = async (options) => {
   console.log(`========================================\n`);
 
   // 1. Get material IDs from sections
+  if (onProgress) onProgress("Fetching study materials...");
   const materialIds = await getMaterialIdsFromSections(sectionIds);
   console.log(`[QuizGen] Found ${materialIds.length} materials from ${sectionIds.length} sections`);
 
@@ -798,6 +804,7 @@ export const generateQuizFromSections = async (options) => {
   }
 
   // 2. Get all chunks for materials
+  if (onProgress) onProgress("Processing document content...");
   const allChunks = await getAllChunksForMaterials(materialIds);
   console.log(`[QuizGen] Retrieved ${allChunks.length} chunks with embeddings`);
 
@@ -806,6 +813,7 @@ export const generateQuizFromSections = async (options) => {
   }
 
   // 3. Try to group chunks by chapter
+  if (onProgress) onProgress("Analyzing topics and chapters...");
   const chapterGroups = groupChunksByChapter(allChunks);
   
   let generationGroups;
@@ -889,7 +897,7 @@ export const generateQuizFromSections = async (options) => {
   const bufferMultiplier = 1.15;
   
   // Cap questions per LLM call to avoid truncated responses
-  const MAX_QUESTIONS_PER_CALL = 10;
+  const MAX_QUESTIONS_PER_CALL = 20;
   
   // Break down groups into smaller tasks if they exceed MAX_QUESTIONS_PER_CALL
   const tasks = [];
@@ -914,6 +922,7 @@ export const generateQuizFromSections = async (options) => {
 
   console.log(`[QuizGen] Created ${tasks.length} generation tasks for ${generationGroups.length} groups`);
 
+  if (onProgress) onProgress("Generating questions with AI...");
   const results = await runInBatches(tasks, CONCURRENCY_LIMIT, (task, index) => 
     generateQuestionsForCluster(
       { chunks: task.group.chunks, centroid: task.group.centroid || null },
@@ -925,13 +934,17 @@ export const generateQuizFromSections = async (options) => {
         totalClusters: generationGroups.length,
         chapterInfo: useChapterMode ? { number: task.group.chapterNum, title: task.group.chapterTitle } : null
       }
-    )
+    ),
+    (msg) => {
+       if (onProgress) onProgress(`Generating questions: ${msg}`);
+    }
   );
 
   const generationTime = Date.now() - startTime;
   console.log(`[QuizGen] Generation completed in ${generationTime}ms`);
 
   // 5. Collect questions, respecting per-chapter targets
+  if (onProgress) onProgress("Processing generated questions...");
   const allQuestions = [];
   const errors = [];
   
@@ -1000,6 +1013,7 @@ export const generateQuizFromSections = async (options) => {
   }
 
   // 8. Deduplicate across all clusters
+  if (onProgress) onProgress("Deduplicating questions...");
   const uniqueQuestions = await deduplicateQuestions(allQuestions);
 
   // 9. Take only the requested count
@@ -1007,6 +1021,7 @@ export const generateQuizFromSections = async (options) => {
   console.log(`[QuizGen] Final quiz: ${finalQuestions.length} questions`);
 
   // 10. Store quiz in database
+  if (onProgress) onProgress("Saving quiz...");
   const quizName = name || `Quiz - ${new Date().toISOString().split('T')[0]}`;
   const quizId = await storeQuiz({
     userId,

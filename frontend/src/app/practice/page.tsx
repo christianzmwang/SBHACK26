@@ -70,6 +70,7 @@ export default function PracticePage() {
   
   // Practice set generation state
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<string>('');
   const [setSize, setSetSize] = useState<string>('20');
   const [practiceNameInput, setPracticeNameInput] = useState('');
   const [saveToPracticeFolder, setSaveToPracticeFolder] = useState<string | null>(null);
@@ -569,6 +570,7 @@ export default function PracticePage() {
       }
 
       // Generate as quiz (can be practiced in any mode)
+      setGenerationStatus('Starting generation...');
       const quiz = await practiceApi.generateQuiz({
         sectionIds,
         userId,
@@ -577,7 +579,9 @@ export default function PracticePage() {
         difficulty: 'mixed',
         name: practiceNameInput || undefined,
         folderId: saveToPracticeFolder || undefined,
+        onProgress: (msg) => setGenerationStatus(msg),
       });
+      setGenerationStatus('');
       setGeneratedQuiz(quiz);
       setGeneratedFlashcards(null);
       setCurrentQuestionIndex(0);
@@ -1744,7 +1748,7 @@ export default function PracticePage() {
             {/* Loading message with helpful info */}
             {isGenerating && (
               <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
-                <p className="font-medium mb-1">🎯 Generating your practice set...</p>
+                <p className="font-medium mb-1">🎯 {generationStatus || 'Generating your practice set...'}</p>
                 <p className="text-xs text-indigo-300/80">
                   Our AI is analyzing your materials and creating questions. This typically takes 1-3 minutes for standard quizzes.
                   For large content selections, it may take up to 5 minutes.

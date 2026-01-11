@@ -300,7 +300,8 @@ router.get('/overview', async (req, res) => {
  */
 router.post('/quizzes/generate', async (req, res) => {
   try {
-    const { sectionIds, userId, questionCount, questionType, difficulty, name, folderId, description } = req.body;
+    const { sectionIds, userId, questionCount, questionType, difficulty, name, folderId, description, stream } = req.body;
+    const isStreaming = req.query.stream === 'true' || stream === true;
 
     if (!sectionIds || sectionIds.length === 0) {
       return res.status(400).json({ error: 'At least one section ID is required' });
@@ -310,7 +311,7 @@ router.post('/quizzes/generate', async (req, res) => {
       return res.status(400).json({ error: 'User ID is required' });
     }
 
-    const result = await generateQuizFromSections({
+    const options = {
       sectionIds,
       userId,
       questionCount: parseInt(questionCount) || 10,
@@ -319,15 +320,44 @@ router.post('/quizzes/generate', async (req, res) => {
       name,
       folderId,
       description
-    });
+    };
 
-    res.status(201).json({
-      success: true,
-      quiz: result
-    });
+    if (isStreaming) {
+      res.setHeader('Content-Type', 'text/plain');
+      res.setHeader('Transfer-Encoding', 'chunked');
+      
+      const onProgress = (message) => {
+        res.write(JSON.stringify({ type: 'progress', message }) + '\n');
+      };
+
+      const result = await generateQuizFromSections(options, onProgress);
+
+      res.write(JSON.stringify({ type: 'result', quiz: result }) + '\n');
+      res.end();
+    } else {
+      const result = await generateQuizFromSections(options);
+      res.status(201).json({
+        success: true,
+        quiz: result
+      });
+    }
   } catch (error) {
     console.error('Error generating quiz:', error);
-    res.status(500).json({ error: error.message });
+    const isStreaming = req.query.stream === 'true' || req.body.stream === true;
+    
+    if (isStreaming) {
+       // Only write if headers haven't been sent, or if we are midway
+       // If headers sent, we can write an error chunk
+       if (!res.headersSent) {
+          res.status(500).setHeader('Content-Type', 'application/json'); // fallback
+       }
+       res.write(JSON.stringify({ type: 'error', error: error.message }) + '\n');
+       res.end();
+    } else {
+       if (!res.headersSent) {
+        res.status(500).json({ error: error.message });
+       }
+    }
   }
 });
 
