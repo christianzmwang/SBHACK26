@@ -417,12 +417,23 @@ const generateQuestionsForCluster = async (cluster, options) => {
   }
 
   // Take diverse chunks - top relevant + some variety from the rest
-  const topChunks = contentChunks.slice(0, 3); // Reduced from 5 to 3 for faster processing
-  const remainingChunks = contentChunks.slice(3);
-  // Shuffle remaining and take a few for variety
-  const shuffled = remainingChunks.sort(() => Math.random() - 0.5);
-  const varietyChunks = shuffled.slice(0, 2); // Reduced from 3 to 2
-  contentChunks = [...topChunks, ...varietyChunks];
+  // Strategy: To support multiple calls for the same cluster, we add randomness to top selection
+  
+  // Determine pool of "top" chunks (e.g., top 8 or all if fewer)
+  const topPoolSize = Math.min(contentChunks.length, 8);
+  const topPool = contentChunks.slice(0, topPoolSize);
+  
+  // Shuffle top pool and take 3
+  const selectedTop = topPool.sort(() => Math.random() - 0.5).slice(0, 3);
+  
+  // Remaining chunks for variety (exclude those already picked)
+  const selectedIds = new Set(selectedTop.map(c => c.id));
+  const remainingPool = contentChunks.filter(c => !selectedIds.has(c.id));
+  
+  // Shuffle remaining and take 2
+  const selectedVariety = remainingPool.sort(() => Math.random() - 0.5).slice(0, 2);
+  
+  contentChunks = [...selectedTop, ...selectedVariety];
   
   if (contentChunks.length === 0) {
     const label = chapterInfo ? `Chapter ${chapterInfo.number}` : `Cluster ${clusterIndex + 1}`;
@@ -880,16 +891,39 @@ export const generateQuizFromSections = async (options) => {
   // Cap questions per LLM call to avoid truncated responses
   const MAX_QUESTIONS_PER_CALL = 10;
   
-  const results = await runInBatches(generationGroups, CONCURRENCY_LIMIT, (group, index) => 
+  // Break down groups into smaller tasks if they exceed MAX_QUESTIONS_PER_CALL
+  const tasks = [];
+  
+  generationGroups.forEach((group, groupIndex) => {
+    const targetWithBuffer = Math.ceil(group.targetQuestions * bufferMultiplier);
+    let remaining = targetWithBuffer;
+    
+    // Ensure at least one task even if target is small
+    if (remaining === 0) remaining = 1;
+
+    while (remaining > 0) {
+      const count = Math.min(MAX_QUESTIONS_PER_CALL, remaining);
+      tasks.push({
+        group,
+        groupIndex,
+        count
+      });
+      remaining -= count;
+    }
+  });
+
+  console.log(`[QuizGen] Created ${tasks.length} generation tasks for ${generationGroups.length} groups`);
+
+  const results = await runInBatches(tasks, CONCURRENCY_LIMIT, (task, index) => 
     generateQuestionsForCluster(
-      { chunks: group.chunks, centroid: group.centroid || null },
+      { chunks: task.group.chunks, centroid: task.group.centroid || null },
       {
-        count: Math.min(MAX_QUESTIONS_PER_CALL, Math.max(1, Math.ceil(group.targetQuestions * bufferMultiplier))),
+        count: task.count,
         questionType,
         difficulty,
-        clusterIndex: index,
+        clusterIndex: task.groupIndex,
         totalClusters: generationGroups.length,
-        chapterInfo: useChapterMode ? { number: group.chapterNum, title: group.chapterTitle } : null
+        chapterInfo: useChapterMode ? { number: task.group.chapterNum, title: task.group.chapterTitle } : null
       }
     )
   );
@@ -901,24 +935,40 @@ export const generateQuizFromSections = async (options) => {
   const allQuestions = [];
   const errors = [];
   
+  // Group results back to their chapters/clusters
+  const questionsByGroup = new Map();
+  
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
-    const group = generationGroups[i];
+    const task = tasks[i];
+    const group = task.group;
     
     if (result.questions && result.questions.length > 0) {
-      // Take up to the target for this chapter (plus a small buffer)
-      const questionsFromGroup = result.questions.slice(0, group.targetQuestions + 2);
-      // Tag questions with chapter info
-      questionsFromGroup.forEach(q => {
-        q.chapter = group.chapterNum;
-        q.chapterTitle = group.chapterTitle;
-      });
-      allQuestions.push(...questionsFromGroup);
+      if (!questionsByGroup.has(group)) {
+        questionsByGroup.set(group, []);
+      }
+      questionsByGroup.get(group).push(...result.questions);
     }
     if (result.error) {
       errors.push(result.error);
     }
   }
+
+  // Process grouped questions
+  generationGroups.forEach(group => {
+    const questions = questionsByGroup.get(group) || [];
+    
+    // Take up to the target for this chapter (plus a small buffer)
+    const cap = group.targetQuestions + 2; 
+    const kept = questions.slice(0, cap);
+    
+    kept.forEach(q => {
+      q.chapter = group.chapterNum;
+      q.chapterTitle = group.chapterTitle;
+    });
+    
+    allQuestions.push(...kept);
+  });
   
   console.log(`[QuizGen] Generated ${allQuestions.length} total questions from ${generationGroups.length} groups`);
   
@@ -1059,16 +1109,38 @@ export const generateFlashcardsFromSections = async (options) => {
   const startTime = Date.now();
   const bufferMultiplier = useChapterMode ? 1.5 : 1.3;
   
-  const results = await runInBatches(generationGroups, CONCURRENCY_LIMIT, (group, index) => 
+  // Break down groups into smaller tasks
+  const tasks = [];
+  
+  generationGroups.forEach((group, groupIndex) => {
+    const targetWithBuffer = Math.ceil(group.targetQuestions * bufferMultiplier);
+    let remaining = targetWithBuffer;
+    
+    if (remaining === 0) remaining = 1;
+
+    while (remaining > 0) {
+      const count = Math.min(MAX_QUESTIONS_PER_CALL, remaining);
+      tasks.push({
+        group,
+        groupIndex,
+        count
+      });
+      remaining -= count;
+    }
+  });
+  
+  console.log(`[FlashcardGen] Created ${tasks.length} generation tasks for ${generationGroups.length} groups`);
+
+  const results = await runInBatches(tasks, CONCURRENCY_LIMIT, (task, index) => 
     generateQuestionsForCluster(
-      { chunks: group.chunks, centroid: group.centroid || null },
+      { chunks: task.group.chunks, centroid: task.group.centroid || null },
       {
-        count: Math.ceil(group.targetQuestions * bufferMultiplier),
+        count: task.count,
         questionType: 'flashcard',
         difficulty: 'medium',
-        clusterIndex: index,
+        clusterIndex: task.groupIndex,
         totalClusters: generationGroups.length,
-        chapterInfo: useChapterMode ? { number: group.chapterNum, title: group.chapterTitle } : null
+        chapterInfo: useChapterMode ? { number: task.group.chapterNum, title: task.group.chapterTitle } : null
       }
     )
   );
@@ -1079,22 +1151,35 @@ export const generateFlashcardsFromSections = async (options) => {
   const allFlashcards = [];
   const errors = [];
   
+  const cardsByGroup = new Map();
+  
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
-    const group = generationGroups[i];
+    const task = tasks[i];
+    const group = task.group;
     
     if (result.questions && result.questions.length > 0) {
-      const cardsFromGroup = result.questions.slice(0, group.targetQuestions + 2);
-      cardsFromGroup.forEach(c => {
-        c.chapter = group.chapterNum;
-        c.chapterTitle = group.chapterTitle;
-      });
-      allFlashcards.push(...cardsFromGroup);
+      if (!cardsByGroup.has(group)) {
+        cardsByGroup.set(group, []);
+      }
+      cardsByGroup.get(group).push(...result.questions);
     }
     if (result.error) {
       errors.push(result.error);
     }
   }
+  
+  generationGroups.forEach(group => {
+    const cards = cardsByGroup.get(group) || [];
+    const cap = group.targetQuestions + 2;
+    const kept = cards.slice(0, cap);
+    
+    kept.forEach(c => {
+      c.chapter = group.chapterNum;
+      c.chapterTitle = group.chapterTitle;
+    });
+    allFlashcards.push(...kept);
+  });
   
   if (errors.length > 0) {
     console.log(`[FlashcardGen] Errors encountered: ${errors.length} groups failed`);
