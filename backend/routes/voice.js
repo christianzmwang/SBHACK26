@@ -130,7 +130,8 @@ Important matching rules:
     });
 
     // Parse the JSON response - remove markdown code fences if present
-    const codeBlockRegex = new RegExp('```json\\n?|\\n?```', 'g');
+    // Using \x60 (backtick) to avoid any encoding issues
+    const codeBlockRegex = new RegExp('\x60\x60\x60json\\n?|\\n?\x60\x60\x60', 'g');
     const cleanResponse = response.replace(codeBlockRegex, '').trim();
     const intentResult = JSON.parse(cleanResponse);
     

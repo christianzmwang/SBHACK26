@@ -3494,26 +3494,13 @@ export default function PracticePage() {
                     className="group border border-slate-800 p-5 hover:border-slate-600 transition cursor-pointer"
                   >
                     <div className="flex items-center gap-4">
-                      <div className={`flex-shrink-0 w-10 h-10 flex items-center justify-center border ${
-                        quiz.question_type === 'true_false' ? 'border-green-600' : 'border-blue-600'
-                      }`}>
-                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${
-                          quiz.question_type === 'true_false' ? 'text-green-400' : 'text-blue-400'
-                        }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center border border-slate-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                         </svg>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="text-white font-medium text-base">{quiz.name}</h3>
-                          <span className={`text-xs px-2 py-0.5 border ${
-                            quiz.question_type === 'true_false' 
-                              ? 'border-green-600 text-green-400' 
-                              : 'border-blue-600 text-blue-400'
-                          }`}>
-                            {quiz.question_type === 'true_false' ? 'T/F' : 'MC'}
-                          </span>
-                        </div>
+                        <h3 className="text-white font-medium text-base">{quiz.name}</h3>
                         <p className="text-slate-500 text-sm mt-0.5">
                           {quiz.total_questions} questions • {formatDate(quiz.created_at)}
                         </p>
@@ -3743,7 +3730,7 @@ export default function PracticePage() {
                   {/* Practice sets count */}
                   <div className="text-center min-w-[100px]">
                     <div className="flex items-center justify-center gap-1.5">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                       </svg>
                       <span className="text-white font-semibold">{setCount}</span>
@@ -3940,18 +3927,12 @@ export default function PracticePage() {
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <div className={`w-8 h-8 rounded flex items-center justify-center ${
-                        quiz.question_type === 'true_false' ? 'bg-green-900/50' : 'bg-blue-900/50'
-                      }`}>
-                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ${
-                          quiz.question_type === 'true_false' ? 'text-green-400' : 'text-blue-400'
-                        }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <div className="w-8 h-8 rounded flex items-center justify-center bg-slate-800">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                         </svg>
                       </div>
-                      <span className={`text-xs font-medium uppercase ${
-                        quiz.question_type === 'true_false' ? 'text-green-400' : 'text-blue-400'
-                      }`}>
+                      <span className="text-xs font-medium uppercase text-slate-400">
                         {quiz.question_type === 'true_false' ? 'True/False' : 'Multiple Choice'}
                       </span>
                     </div>
