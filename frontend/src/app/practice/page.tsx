@@ -206,7 +206,7 @@ export default function PracticePage() {
           cards: (quiz.questions || []).map((q: Question) => ({
             id: q.id,
             front: q.question,
-            back: q.explanation || (q.options ? `Answer: ${q.correct_answer} - ${q.options[q.correct_answer as keyof typeof q.options]}` : q.correct_answer),
+            back: q.explanation || (q.options && q.correct_answer ? `Answer: ${q.correct_answer} - ${q.options[q.correct_answer as keyof typeof q.options]}` : q.correct_answer) || 'No answer provided',
             topic: q.topic,
           })),
         };

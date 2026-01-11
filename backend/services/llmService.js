@@ -176,8 +176,20 @@ export const streamLLM = async function* (prompt, options = {}) {
   yield response;
 };
 
+/**
+ * Stream chat completion with messages array (for voice/chat interfaces)
+ * Returns chunks via async generator
+ */
+export const streamChatCompletion = async function* (messages, options = {}) {
+  // For simplicity, just return the full response as a single chunk
+  // OpenRouter does support streaming but requires different SSE handling
+  const response = await callLLMWithHistory(messages, options);
+  yield response;
+};
+
 export default {
   callLLM,
   callLLMWithHistory,
-  streamLLM
+  streamLLM,
+  streamChatCompletion
 };
