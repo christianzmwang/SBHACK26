@@ -53,7 +53,43 @@ router.post('/chat', async (req, res) => {
     // Build system prompt based on context
     let systemPrompt = `You are a helpful study assistant helping a student practice their course material. `;
     
-    if (context?.viewMode === 'quiz' && context?.currentQuestion) {
+    // Check for quiz results FIRST (before currentQuestion check)
+    if (context?.viewMode === 'quiz' && context?.showResults) {
+      systemPrompt += `\n\nThe student just completed a quiz.`;
+      if (context.quizName) {
+        systemPrompt += `\nQuiz: ${context.quizName}`;
+      }
+      systemPrompt += `\nScore: ${context.score?.correct}/${context.score?.total} (${context.score?.percentage}%)`;
+      
+      // Include detailed results if available
+      if (context.incorrectQuestions && context.incorrectQuestions.length > 0) {
+        systemPrompt += `\n\n=== QUESTIONS THE STUDENT GOT WRONG ===`;
+        context.incorrectQuestions.forEach((q, idx) => {
+          systemPrompt += `\n\nQuestion ${q.questionNumber}: ${q.questionText}`;
+          systemPrompt += `\n  Student's Answer: ${q.userAnswer}`;
+          systemPrompt += `\n  Correct Answer: ${q.correctAnswer}`;
+          if (q.explanation) {
+            systemPrompt += `\n  Explanation: ${q.explanation}`;
+          }
+        });
+      }
+      
+      if (context.correctQuestions && context.correctQuestions.length > 0) {
+        systemPrompt += `\n\n=== QUESTIONS THE STUDENT GOT CORRECT ===`;
+        systemPrompt += `\nQuestion numbers: ${context.correctQuestions.join(', ')}`;
+      }
+      
+      // Include all question details for reference
+      if (context.questionResults && context.questionResults.length > 0) {
+        systemPrompt += `\n\n=== FULL QUIZ BREAKDOWN ===`;
+        context.questionResults.forEach(q => {
+          const status = q.isCorrect ? '✓ CORRECT' : '✗ WRONG';
+          systemPrompt += `\n${q.questionNumber}. [${status}] ${q.questionText}`;
+        });
+      }
+      
+      systemPrompt += `\n\nHelp them understand what they got wrong, explain the concepts behind incorrect answers, and provide study tips. Be supportive, educational, and encouraging. You have full access to which questions they missed and can explain any of them in detail.`;
+    } else if (context?.viewMode === 'quiz' && context?.currentQuestion) {
       const q = context.currentQuestion;
       systemPrompt += `\n\nThe student is currently taking a quiz. `;
       systemPrompt += `\nCurrent Question (${context.currentQuestionIndex + 1}/${context.totalQuestions}): ${q.question}`;
@@ -72,10 +108,6 @@ router.post('/chat', async (req, res) => {
       }
       
       systemPrompt += `\n\nHelp them understand the question, provide hints if asked, but don't give away the answer directly unless they specifically ask for it. Encourage critical thinking.`;
-    } else if (context?.viewMode === 'quiz' && context?.showResults) {
-      systemPrompt += `\n\nThe student just completed a quiz.`;
-      systemPrompt += `\nScore: ${context.score?.correct}/${context.score?.total} (${context.score?.percentage}%)`;
-      systemPrompt += `\n\nHelp them understand what they got wrong, explain concepts they struggled with, and encourage them. Be supportive and educational.`;
     } else if (context?.viewMode === 'flashcards' && context?.currentCard) {
       const card = context.currentCard;
       systemPrompt += `\n\nThe student is studying flashcards.`;
