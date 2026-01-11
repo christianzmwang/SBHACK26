@@ -49,11 +49,11 @@ const calculateCentroid = (chunks) => {
  * 2. Finding significant drops in similarity (topic shifts)
  * 3. Using adaptive thresholds based on the document's characteristics
  * 
+ * No artificial min/max constraints - finds natural topic breaks only
+ * 
  * @param {Array} chunks - Chunks with embeddings, in document order
- * @param {number} minTopics - Minimum topics to create (default 3)
- * @param {number} maxTopics - Maximum topics to create (default 15)
  */
-const detectTopicBoundaries = (chunks, minTopics = 3, maxTopics = 15) => {
+const detectTopicBoundaries = (chunks) => {
   if (chunks.length === 0) return [];
   if (chunks.length <= 3) {
     return [{ chunks, centroid: calculateCentroid(chunks), size: chunks.length }];
@@ -97,60 +97,30 @@ const detectTopicBoundaries = (chunks, minTopics = 3, maxTopics = 15) => {
     });
   }
   
-  // Step 3: Find the strongest boundaries
-  // Sort by score (highest first) and pick top candidates
-  const sortedBoundaries = [...boundaryScores].sort((a, b) => b.score - a.score);
-  
-  // Calculate statistics for adaptive thresholding
+  // Step 3: Find natural boundaries using adaptive thresholding
   const allDrops = boundaryScores.map(b => b.score).filter(s => s > 0);
+  
   if (allDrops.length === 0) {
-    // No clear boundaries - use even splits
-    return createEvenSplits(chunks, Math.min(maxTopics, Math.ceil(chunks.length / 15)));
+    // No variation in similarity - return as single topic
+    console.log(`[Cluster] No similarity variation found - returning as single topic`);
+    return [{ chunks, centroid: calculateCentroid(chunks), size: chunks.length }];
   }
   
+  // Calculate statistics for adaptive thresholding
   const avgDrop = allDrops.reduce((a, b) => a + b, 0) / allDrops.length;
   const stdDev = Math.sqrt(allDrops.reduce((sum, d) => sum + Math.pow(d - avgDrop, 2), 0) / allDrops.length);
   
-  // Adaptive threshold: boundaries with drops above (mean + 0.5*stdDev) are significant
-  const threshold = avgDrop + 0.5 * stdDev;
+  // Adaptive threshold: boundaries with drops above (mean + 0.75*stdDev) are significant
+  // Using 0.75 gives a good balance - finds clear topic shifts without being too sensitive
+  const threshold = avgDrop + 0.75 * stdDev;
   
-  // Select boundaries above threshold, but respect min/max constraints
-  let selectedBoundaries = sortedBoundaries
+  // Select all boundaries that exceed the threshold - these are natural topic breaks
+  let selectedBoundaries = boundaryScores
     .filter(b => b.score >= threshold)
     .map(b => b.index)
     .sort((a, b) => a - b); // Sort by position in document
   
-  // Ensure minimum spacing between boundaries (at least 5 chunks per topic)
-  const minSpacing = Math.max(5, Math.floor(chunks.length / maxTopics));
-  selectedBoundaries = filterBySpacing(selectedBoundaries, minSpacing);
-  
-  // Enforce min/max topics
-  const targetBoundaries = Math.min(maxTopics - 1, Math.max(minTopics - 1, selectedBoundaries.length));
-  
-  if (selectedBoundaries.length > targetBoundaries) {
-    // Too many boundaries - keep only the strongest ones
-    selectedBoundaries = sortedBoundaries
-      .slice(0, targetBoundaries * 2) // Take top candidates
-      .map(b => b.index)
-      .sort((a, b) => a - b);
-    selectedBoundaries = filterBySpacing(selectedBoundaries, minSpacing);
-    selectedBoundaries = selectedBoundaries.slice(0, targetBoundaries);
-  } else if (selectedBoundaries.length < minTopics - 1) {
-    // Too few boundaries - add more from the sorted list
-    for (const boundary of sortedBoundaries) {
-      if (selectedBoundaries.length >= minTopics - 1) break;
-      if (!selectedBoundaries.includes(boundary.index)) {
-        // Check spacing
-        const fitsSpacing = selectedBoundaries.every(
-          existing => Math.abs(existing - boundary.index) >= minSpacing
-        );
-        if (fitsSpacing) {
-          selectedBoundaries.push(boundary.index);
-          selectedBoundaries.sort((a, b) => a - b);
-        }
-      }
-    }
-  }
+  console.log(`[Cluster] Threshold: ${threshold.toFixed(4)}, Found ${selectedBoundaries.length} boundaries above threshold`);
   
   // Step 4: Create topic clusters from boundaries
   const clusters = [];
@@ -189,47 +159,6 @@ const detectTopicBoundaries = (chunks, minTopics = 3, maxTopics = 15) => {
   return clusters;
 };
 
-/**
- * Filter boundaries to ensure minimum spacing between them
- */
-const filterBySpacing = (boundaries, minSpacing) => {
-  if (boundaries.length <= 1) return boundaries;
-  
-  const filtered = [boundaries[0]];
-  for (let i = 1; i < boundaries.length; i++) {
-    if (boundaries[i] - filtered[filtered.length - 1] >= minSpacing) {
-      filtered.push(boundaries[i]);
-    }
-  }
-  return filtered;
-};
-
-/**
- * Create evenly-spaced topic splits when no clear boundaries exist
- */
-const createEvenSplits = (chunks, numTopics) => {
-  const clusters = [];
-  const chunkSize = Math.ceil(chunks.length / numTopics);
-  
-  for (let i = 0; i < numTopics; i++) {
-    const start = i * chunkSize;
-    const end = Math.min(start + chunkSize, chunks.length);
-    const topicChunks = chunks.slice(start, end);
-    
-    if (topicChunks.length > 0) {
-      clusters.push({
-        chunks: topicChunks,
-        centroid: calculateCentroid(topicChunks),
-        size: topicChunks.length,
-        startIndex: start,
-        endIndex: end - 1
-      });
-    }
-  }
-  
-  return clusters;
-};
-
 // Main clustering function - uses topic boundary detection for natural topics
 const clusterChunksByTopic = (chunks, numClusters = 6, minChunksPerGroup = 1) => {
   if (chunks.length === 0) return [];
@@ -260,8 +189,8 @@ const clusterChunksByTopic = (chunks, numClusters = 6, minChunksPerGroup = 1) =>
     return [{ chunks: validChunks, centroid: calculateCentroid(validChunks), size: validChunks.length }];
   }
 
-  // Use topic boundary detection - respects document order and finds natural topic shifts
-  const topics = detectTopicBoundaries(validChunks, 3, 15);
+  // Use topic boundary detection - finds natural topic shifts without artificial constraints
+  const topics = detectTopicBoundaries(validChunks);
   
   console.log(`[Cluster] Created ${topics.length} natural topics from ${validChunks.length} chunks`);
 
