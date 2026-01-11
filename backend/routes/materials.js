@@ -156,6 +156,8 @@ router.post('/materials/search', async (req, res) => {
 /**
  * Get content structure (chapters/topics) for a section
  * GET /api/materials/section/:sectionId/structure
+ * 
+ * Returns structure PER MATERIAL so each file's chapters/topics are shown individually
  */
 router.get('/materials/section/:sectionId/structure', async (req, res) => {
   try {
@@ -175,10 +177,8 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
       return res.json({
         success: true,
         structure: {
-          hasChapters: false,
           materials: [],
-          totalChunks: 0,
-          topics: []
+          totalChunks: 0
         }
       });
     }
@@ -197,91 +197,106 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
       [materialIds]
     );
 
-    // Analyze chapter structure from chunk metadata
-    const chapterMap = new Map();
-    let hasChapterStructure = false;
-    let unstructuredCount = 0;
-
+    // Group chunks by material
+    const chunksByMaterial = new Map();
     for (const chunk of chunksResult.rows) {
-      const chapterNum = chunk.metadata?.chapter;
-      const chapterTitle = chunk.metadata?.chapterTitle;
-      
-      if (chapterNum && chapterTitle && chapterTitle !== 'Main Content') {
-        hasChapterStructure = true;
-        const key = `${chunk.material_id}_ch${chapterNum}`;
-        
-        if (!chapterMap.has(key)) {
-          chapterMap.set(key, {
-            chapterNum,
-            chapterTitle,
-            materialId: chunk.material_id,
-            chunkCount: 0,
-            topics: new Set()
-          });
-        }
-        
-        const chapter = chapterMap.get(key);
-        chapter.chunkCount++;
-        
-        // Track topics within chapter if available
-        if (chunk.metadata?.topic) {
-          chapter.topics.add(chunk.metadata.topic);
-        }
-      } else {
-        unstructuredCount++;
+      if (!chunksByMaterial.has(chunk.material_id)) {
+        chunksByMaterial.set(chunk.material_id, []);
       }
+      chunksByMaterial.get(chunk.material_id).push(chunk);
     }
 
-    // If more than half chunks are unstructured, don't report chapter structure
-    if (unstructuredCount > chunksResult.rows.length * 0.5) {
-      hasChapterStructure = false;
-    }
+    // Analyze structure for each material individually
+    const materials = materialsResult.rows.map(m => {
+      const materialChunks = chunksByMaterial.get(m.id) || [];
+      
+      // Analyze chapter structure for this specific material
+      const chapterMap = new Map();
+      let structuredCount = 0;
+      let unstructuredCount = 0;
 
-    // Build response structure
-    const materials = materialsResult.rows.map(m => ({
-      id: m.id,
-      title: m.title,
-      fileName: m.file_name,
-      totalChunks: m.total_chunks,
-      structure: m.metadata?.structure || null
-    }));
+      for (const chunk of materialChunks) {
+        const chapterNum = chunk.metadata?.chapter;
+        const chapterTitle = chunk.metadata?.chapterTitle;
+        
+        if (chapterNum && chapterTitle && chapterTitle !== 'Main Content') {
+          structuredCount++;
+          const key = `ch${chapterNum}`;
+          
+          if (!chapterMap.has(key)) {
+            chapterMap.set(key, {
+              chapterNum,
+              chapterTitle,
+              chunkCount: 0,
+              topics: new Set()
+            });
+          }
+          
+          const chapter = chapterMap.get(key);
+          chapter.chunkCount++;
+          
+          if (chunk.metadata?.topic) {
+            chapter.topics.add(chunk.metadata.topic);
+          }
+        } else {
+          unstructuredCount++;
+        }
+      }
 
-    let chapters = [];
-    if (hasChapterStructure) {
-      chapters = Array.from(chapterMap.values())
-        .sort((a, b) => a.chapterNum - b.chapterNum)
-        .map(ch => ({
-          number: ch.chapterNum,
-          title: ch.chapterTitle,
-          chunkCount: ch.chunkCount,
-          percentage: ((ch.chunkCount / chunksResult.rows.length) * 100).toFixed(1),
-          topics: Array.from(ch.topics)
-        }));
-    }
+      // Determine if this material has chapter structure
+      // Need at least 30% of chunks to have chapter info
+      const hasChapters = structuredCount > materialChunks.length * 0.3 && chapterMap.size > 0;
 
-    // If no chapter structure, we'll need to cluster to show topics
-    // For now, just indicate clustering would be needed
-    let topicSummary = null;
-    if (!hasChapterStructure && chunksResult.rows.length > 0) {
-      // Count chunks with embeddings for potential clustering
-      const embeddedChunks = chunksResult.rows.filter(c => c.embedding).length;
-      topicSummary = {
-        totalChunks: chunksResult.rows.length,
-        embeddedChunks,
-        message: embeddedChunks > 0 
-          ? `Content will be automatically grouped into ${Math.max(2, Math.ceil(embeddedChunks / 25))} natural topic clusters when generating quizzes/flashcards.`
-          : 'No embeddings available for topic analysis.'
+      let chapters = [];
+      if (hasChapters) {
+        chapters = Array.from(chapterMap.values())
+          .sort((a, b) => a.chapterNum - b.chapterNum)
+          .map(ch => ({
+            number: ch.chapterNum,
+            title: ch.chapterTitle,
+            chunkCount: ch.chunkCount,
+            percentage: ((ch.chunkCount / materialChunks.length) * 100).toFixed(1),
+            topics: Array.from(ch.topics)
+          }));
+      }
+
+      // Topic summary for materials without chapter structure
+      let topicSummary = null;
+      if (!hasChapters && materialChunks.length > 0) {
+        const embeddedChunks = materialChunks.filter(c => c.embedding).length;
+        const estimatedClusters = Math.max(2, Math.ceil(embeddedChunks / 25));
+        topicSummary = {
+          totalChunks: materialChunks.length,
+          embeddedChunks,
+          estimatedClusters,
+          message: embeddedChunks > 0 
+            ? `Will be grouped into ~${estimatedClusters} natural topic clusters.`
+            : 'No embeddings available.'
+        };
+      }
+
+      return {
+        id: m.id,
+        title: m.title,
+        fileName: m.file_name,
+        totalChunks: m.total_chunks || materialChunks.length,
+        hasChapters,
+        chapters,
+        topicSummary
       };
-    }
+    });
+
+    // Overall stats
+    const totalChunks = chunksResult.rows.length;
+    const materialsWithChapters = materials.filter(m => m.hasChapters).length;
 
     res.json({
       success: true,
       structure: {
-        hasChapters: hasChapterStructure,
         materials,
-        totalChunks: chunksResult.rows.length,
-        chapters,
-        topicSummary
+        totalChunks,
+        materialsWithChapters,
+        totalMaterials: materials.length
       }
     });
   } catch (error) {

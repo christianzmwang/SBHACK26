@@ -526,8 +526,8 @@ function PreviewContent() {
 
         {/* Content Structure Panel */}
         {showStructure && (
-          <div className="mb-4 border border-slate-700 bg-slate-900/50 p-4">
-            <div className="flex items-center justify-between mb-4">
+          <div className="mb-4 border border-slate-700 bg-slate-900/50 p-4 max-h-[60vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4 sticky top-0 bg-slate-900/95 -mt-4 pt-4 pb-2 -mx-4 px-4">
               <h3 className="text-sm font-semibold text-white uppercase tracking-wide">
                 Content Structure Analysis
               </h3>
@@ -547,99 +547,102 @@ function PreviewContent() {
                 <span className="text-sm">Analyzing content structure...</span>
               </div>
             ) : contentStructure ? (
-              <div className="space-y-4">
-                {/* Summary */}
+              <div className="space-y-6">
+                {/* Overall Summary */}
                 <div className="flex flex-wrap gap-4 text-sm">
                   <div className="bg-slate-800 px-3 py-2">
                     <span className="text-slate-400">Materials:</span>
-                    <span className="ml-2 text-white font-medium">{contentStructure.materials.length}</span>
+                    <span className="ml-2 text-white font-medium">{contentStructure.totalMaterials}</span>
                   </div>
                   <div className="bg-slate-800 px-3 py-2">
                     <span className="text-slate-400">Total Chunks:</span>
                     <span className="ml-2 text-white font-medium">{contentStructure.totalChunks}</span>
                   </div>
-                  <div className="bg-slate-800 px-3 py-2">
-                    <span className="text-slate-400">Structure:</span>
-                    <span className={`ml-2 font-medium ${contentStructure.hasChapters ? 'text-green-400' : 'text-amber-400'}`}>
-                      {contentStructure.hasChapters ? 'Chapters Detected' : 'Topic Clustering'}
-                    </span>
-                  </div>
+                  {contentStructure.materialsWithChapters > 0 && (
+                    <div className="bg-slate-800 px-3 py-2">
+                      <span className="text-slate-400">With Chapters:</span>
+                      <span className="ml-2 text-green-400 font-medium">{contentStructure.materialsWithChapters}</span>
+                    </div>
+                  )}
                 </div>
 
-                {/* Chapters */}
-                {contentStructure.hasChapters && contentStructure.chapters.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-                      Chapters ({contentStructure.chapters.length})
-                    </h4>
-                    <div className="space-y-2">
-                      {contentStructure.chapters.map((chapter) => (
-                        <div key={chapter.number} className="bg-slate-800 p-3">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="text-indigo-400 font-mono text-sm">Ch {chapter.number}</span>
-                              <span className="text-white">{chapter.title}</span>
-                            </div>
-                            <div className="text-sm text-slate-400">
-                              {chapter.chunkCount} chunks ({chapter.percentage}%)
-                            </div>
-                          </div>
-                          {chapter.topics.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {chapter.topics.map((topic, i) => (
-                                <span key={i} className="text-xs bg-slate-700 text-slate-300 px-2 py-0.5">
-                                  {topic}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          {/* Progress bar */}
-                          <div className="mt-2 h-1.5 bg-slate-700 overflow-hidden">
-                            <div 
-                              className="h-full bg-indigo-500 transition-all" 
-                              style={{ width: `${chapter.percentage}%` }}
-                            />
-                          </div>
+                {/* Per-Material Structure */}
+                {contentStructure.materials.map((material) => (
+                  <div key={material.id} className="border border-slate-700 bg-slate-800/50">
+                    {/* Material Header */}
+                    <div className="flex items-center justify-between p-3 border-b border-slate-700">
+                      <div className="flex items-center gap-3">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <div>
+                          <p className="text-white font-medium">{material.fileName}</p>
+                          <p className="text-xs text-slate-400">{material.totalChunks} chunks</p>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Topic Summary (for non-chapter content) */}
-                {!contentStructure.hasChapters && contentStructure.topicSummary && (
-                  <div className="bg-slate-800 p-4">
-                    <div className="flex items-start gap-3">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <div>
-                        <p className="text-sm text-slate-300">
-                          No chapter structure detected in this content.
-                        </p>
-                        <p className="text-sm text-slate-400 mt-1">
-                          {contentStructure.topicSummary.message}
-                        </p>
                       </div>
+                      <span className={`text-xs font-medium px-2 py-1 ${
+                        material.hasChapters 
+                          ? 'bg-green-900/50 text-green-400 border border-green-700' 
+                          : 'bg-amber-900/50 text-amber-400 border border-amber-700'
+                      }`}>
+                        {material.hasChapters ? `${material.chapters.length} Chapters` : 'Topic Clustering'}
+                      </span>
                     </div>
-                  </div>
-                )}
 
-                {/* Materials List */}
-                {contentStructure.materials.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-                      Processed Materials
-                    </h4>
-                    <div className="space-y-1">
-                      {contentStructure.materials.map((material) => (
-                        <div key={material.id} className="flex items-center justify-between bg-slate-800 px-3 py-2 text-sm">
-                          <span className="text-slate-300 truncate flex-1">{material.fileName}</span>
-                          <span className="text-slate-500 ml-2">{material.totalChunks} chunks</span>
+                    {/* Material Content */}
+                    <div className="p-3">
+                      {/* Chapters */}
+                      {material.hasChapters && material.chapters.length > 0 && (
+                        <div className="space-y-2">
+                          {material.chapters.map((chapter) => (
+                            <div key={chapter.number} className="bg-slate-800 p-2.5 border border-slate-700">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-indigo-400 font-mono text-xs font-medium">Ch {chapter.number}</span>
+                                  <span className="text-white text-sm">{chapter.title}</span>
+                                </div>
+                                <div className="text-xs text-slate-400">
+                                  {chapter.chunkCount} ({chapter.percentage}%)
+                                </div>
+                              </div>
+                              {chapter.topics.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {chapter.topics.map((topic, i) => (
+                                    <span key={i} className="text-xs bg-slate-700 text-slate-300 px-1.5 py-0.5">
+                                      {topic}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {/* Progress bar */}
+                              <div className="mt-2 h-1 bg-slate-700 overflow-hidden">
+                                <div 
+                                  className="h-full bg-indigo-500 transition-all" 
+                                  style={{ width: `${chapter.percentage}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
+
+                      {/* Topic Summary (for non-chapter content) */}
+                      {!material.hasChapters && material.topicSummary && (
+                        <div className="flex items-start gap-2 text-sm">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          <p className="text-slate-400">
+                            {material.topicSummary.message}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
+                ))}
+
+                {contentStructure.materials.length === 0 && (
+                  <p className="text-sm text-slate-400">No processed materials yet. Upload files to analyze.</p>
                 )}
               </div>
             ) : (

@@ -764,21 +764,13 @@ export const foldersApi = {
   },
 };
 
-// Content structure types
-export interface ContentStructure {
-  hasChapters: boolean;
-  materials: {
-    id: string;
-    title: string;
-    fileName: string;
-    totalChunks: number;
-    structure: {
-      chapters: { number: number; title: string }[];
-      totalTopics: number;
-      hasStructure: boolean;
-    } | null;
-  }[];
+// Content structure types - per material breakdown
+export interface MaterialStructure {
+  id: string;
+  title: string;
+  fileName: string;
   totalChunks: number;
+  hasChapters: boolean;
   chapters: {
     number: number;
     title: string;
@@ -789,8 +781,16 @@ export interface ContentStructure {
   topicSummary: {
     totalChunks: number;
     embeddedChunks: number;
+    estimatedClusters: number;
     message: string;
   } | null;
+}
+
+export interface ContentStructure {
+  materials: MaterialStructure[];
+  totalChunks: number;
+  materialsWithChapters: number;
+  totalMaterials: number;
 }
 
 // Health check
