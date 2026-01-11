@@ -9,31 +9,43 @@ let vectorRegistered = false;
 
 export const getPool = () => {
   if (!pool && process.env.DATABASE_URL) {
+    // Parse the connection string to check for pooler mode
+    const isPoolerConnection = process.env.DATABASE_URL.includes('pooler') || 
+                                process.env.DATABASE_URL.includes('6543') ||
+                                process.env.DB_POOLER_MODE === 'true';
+    
     const dbConfig = {
       connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : { rejectUnauthorized: false },
-      max: 10, // Reduced from 20 to avoid hitting connection limits
-      min: 0, // Set to 0 to avoid holding idle connections that might be killed by the pooler
-      idleTimeoutMillis: 5000, // Reduced to 5s to close idle connections quickly
-      connectionTimeoutMillis: 30000, // Increased to 30s for slower connections
-      statement_timeout: 60000, // Increased for long running queries
-      query_timeout: 60000, // Increased for long running queries
-      keepAlive: true, // Enable keep-alive to prevent connection drops
-      keepAliveInitialDelayMillis: 10000,
-      allowExitOnIdle: true, // Allow process to exit if pool is idle
+      ssl: { rejectUnauthorized: false },
+      max: isPoolerConnection ? 5 : 10, // Fewer connections for pooler mode
+      min: 0, // Don't hold idle connections
+      idleTimeoutMillis: isPoolerConnection ? 1000 : 5000, // Close idle connections faster for pooler
+      connectionTimeoutMillis: 60000, // Increased to 60s for cold starts/hibernation
+      statement_timeout: 60000,
+      query_timeout: 60000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 5000, // More aggressive keep-alive
+      allowExitOnIdle: true,
     };
 
     pool = new Pool(dbConfig);
     
     pool.on('error', (err) => {
       console.error('Unexpected error on idle client', err);
-      // Don't crash - the retry logic will handle reconnection
+      // Reset pool on severe errors to force fresh connections
+      if (err.message?.includes('Connection terminated') || 
+          err.message?.includes('connection timeout')) {
+        console.log('Resetting pool due to connection error...');
+        pool = null;
+      }
     });
 
-    pool.on('connect', () => {
+    pool.on('connect', (client) => {
       if (process.env.NODE_ENV === 'development') {
         console.log('Database pool: new client connected');
       }
+      // Set per-connection timeout for serverless databases
+      client.query('SET statement_timeout = 55000').catch(() => {});
     });
   }
   return pool;
@@ -87,7 +99,7 @@ export const initializeDatabase = async () => {
 // Retry helper for database operations
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const withDbRetry = async (fn, maxRetries = 5) => {
+const withDbRetry = async (fn, maxRetries = 3) => {
   let lastError;
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -117,7 +129,14 @@ const withDbRetry = async (fn, maxRetries = 5) => {
         throw error;
       }
       
-      const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+      // Reset pool on connection errors to force fresh connection
+      if (error.message?.includes('Connection terminated') || 
+          error.message?.includes('connection timeout')) {
+        console.log('Resetting pool to get fresh connections...');
+        pool = null;
+      }
+      
+      const delay = Math.min(2000 * Math.pow(2, attempt), 10000);
       console.warn(`Database retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms:`, error.message);
       await sleep(delay);
     }
@@ -186,4 +205,34 @@ export const transaction = async (callback) => {
   }
 };
 
-export default { getPool, initializeDatabase, query, transaction };
+// Test database connectivity (useful for debugging)
+export const testConnection = async () => {
+  const pool = getPool();
+  
+  if (!pool) {
+    return { success: false, error: 'DATABASE_URL not configured' };
+  }
+  
+  const start = Date.now();
+  
+  try {
+    const result = await pool.query('SELECT NOW() as time, version() as version');
+    const duration = Date.now() - start;
+    
+    return { 
+      success: true, 
+      latency: duration,
+      serverTime: result.rows[0].time,
+      version: result.rows[0].version.split(' ')[0] + ' ' + result.rows[0].version.split(' ')[1]
+    };
+  } catch (error) {
+    return { 
+      success: false, 
+      error: error.message,
+      code: error.code,
+      latency: Date.now() - start
+    };
+  }
+};
+
+export default { getPool, initializeDatabase, query, transaction, testConnection };

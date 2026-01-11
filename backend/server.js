@@ -11,7 +11,7 @@ import practiceRoutes from './routes/practice.js';
 import voiceRoutes from './routes/voice.js';
 
 // Import services
-import { initializeDatabase, query } from './config/database.js';
+import { initializeDatabase, query, testConnection } from './config/database.js';
 import { errorHandler } from './services/utils.js';
 import { cleanupOldFiles } from './middleware/upload.js';
 
