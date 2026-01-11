@@ -143,14 +143,20 @@ function PreviewContent() {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
-    // Create temporary file items with processing status
+    // Create temporary file items with processing status - use unique batch ID
+    const batchId = Date.now();
+    const tempFileIds = Array.from(files).map((_, index) => `temp-${batchId}-${index}`);
     const tempFiles: FileItem[] = Array.from(files).map((file, index) => ({
-      id: `temp-${Date.now()}-${index}`,
+      id: tempFileIds[index],
       name: file.name,
       uploadDate: new Date().toISOString(),
       size: formatFileSize(file.size),
       processing: true,
     }));
+
+    // Capture the current non-processing file count BEFORE adding temp files
+    const originalFileCount = section.files.filter(f => !f.processing).length;
+    const sectionId = section.id;
 
     // Add files to the list immediately
     setSection((prev) => 
@@ -159,34 +165,43 @@ function PreviewContent() {
 
     try {
       const { files: uploadedFiles, warnings } = await foldersApi.uploadFiles(
-        section.id,
+        sectionId,
         Array.from(files)
       );
 
-      // Replace temporary files with actual uploaded files
+      // Replace only THIS batch's temporary files with actual uploaded files
       setSection((prev) => {
         if (!prev) return null;
-        const newFiles = prev.files.filter(f => !f.processing);
-        return { ...prev, files: [...newFiles, ...uploadedFiles] };
+        // Remove only the temp files from this batch, keep others
+        const remainingFiles = prev.files.filter(f => !tempFileIds.includes(f.id));
+        return { ...prev, files: [...remainingFiles, ...uploadedFiles] };
       });
+
+      // Auto-select the first uploaded file if no file is currently selected
+      if (uploadedFiles.length > 0) {
+        setSelectedFile((prev) => prev || uploadedFiles[0]);
+      }
 
       // Show any warnings about the uploaded files
       if (warnings && warnings.length > 0) {
         setUploadWarnings(warnings);
       }
     } catch (err) {
-      // Keep processing indicator while we poll for completion
-      const originalFileCount = section.files.filter(f => !f.processing).length;
-      
       // Poll for completion - backend may still be processing
       // Try up to 10 times with 3 second delays (30 seconds total)
       for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 3000));
         try {
-          const refreshedSection = await foldersApi.getSection(section.id);
-          // If files were added, update and return without error
-          if (refreshedSection.files.length > originalFileCount) {
+          const refreshedSection = await foldersApi.getSection(sectionId);
+          // If files were added compared to original count, update and return
+          const newNonProcessingCount = refreshedSection.files.filter(f => !f.processing).length;
+          if (newNonProcessingCount > originalFileCount) {
             setSection(refreshedSection);
+            // Auto-select first new file
+            const newFiles = refreshedSection.files.filter(f => !f.processing);
+            if (newFiles.length > 0) {
+              setSelectedFile((prev) => prev || newFiles[newFiles.length - 1]);
+            }
             return;
           }
         } catch {
@@ -194,10 +209,10 @@ function PreviewContent() {
         }
       }
       
-      // If we get here, the upload truly failed
+      // If we get here, the upload truly failed - remove only this batch's temp files
       setSection((prev) => {
         if (!prev) return null;
-        return { ...prev, files: prev.files.filter(f => !f.processing) };
+        return { ...prev, files: prev.files.filter(f => !tempFileIds.includes(f.id)) };
       });
       setError(err instanceof Error ? err.message : 'Upload failed');
     }
@@ -206,14 +221,20 @@ function PreviewContent() {
   const handleFileDrop = async (files: File[]) => {
     if (!section || files.length === 0) return;
 
-    // Create temporary file items with processing status
+    // Create temporary file items with processing status - use unique batch ID
+    const batchId = Date.now();
+    const tempFileIds = files.map((_, index) => `temp-${batchId}-${index}`);
     const tempFiles: FileItem[] = files.map((file, index) => ({
-      id: `temp-${Date.now()}-${index}`,
+      id: tempFileIds[index],
       name: file.name,
       uploadDate: new Date().toISOString(),
       size: formatFileSize(file.size),
       processing: true,
     }));
+
+    // Capture the current non-processing file count BEFORE adding temp files
+    const originalFileCount = section.files.filter(f => !f.processing).length;
+    const sectionId = section.id;
 
     // Add files to the list immediately
     setSection((prev) => 
@@ -222,34 +243,43 @@ function PreviewContent() {
 
     try {
       const { files: uploadedFiles, warnings } = await foldersApi.uploadFiles(
-        section.id,
+        sectionId,
         files
       );
 
-      // Replace temporary files with actual uploaded files
+      // Replace only THIS batch's temporary files with actual uploaded files
       setSection((prev) => {
         if (!prev) return null;
-        const newFiles = prev.files.filter(f => !f.processing);
-        return { ...prev, files: [...newFiles, ...uploadedFiles] };
+        // Remove only the temp files from this batch, keep others
+        const remainingFiles = prev.files.filter(f => !tempFileIds.includes(f.id));
+        return { ...prev, files: [...remainingFiles, ...uploadedFiles] };
       });
+
+      // Auto-select the first uploaded file if no file is currently selected
+      if (uploadedFiles.length > 0) {
+        setSelectedFile((prev) => prev || uploadedFiles[0]);
+      }
 
       // Show any warnings about the uploaded files
       if (warnings && warnings.length > 0) {
         setUploadWarnings(warnings);
       }
     } catch (err) {
-      // Keep processing indicator while we poll for completion
-      const originalFileCount = section.files.filter(f => !f.processing).length;
-      
       // Poll for completion - backend may still be processing
       // Try up to 10 times with 3 second delays (30 seconds total)
       for (let attempt = 0; attempt < 10; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 3000));
         try {
-          const refreshedSection = await foldersApi.getSection(section.id);
-          // If files were added, update and return without error
-          if (refreshedSection.files.length > originalFileCount) {
+          const refreshedSection = await foldersApi.getSection(sectionId);
+          // If files were added compared to original count, update and return
+          const newNonProcessingCount = refreshedSection.files.filter(f => !f.processing).length;
+          if (newNonProcessingCount > originalFileCount) {
             setSection(refreshedSection);
+            // Auto-select first new file
+            const newFiles = refreshedSection.files.filter(f => !f.processing);
+            if (newFiles.length > 0) {
+              setSelectedFile((prev) => prev || newFiles[newFiles.length - 1]);
+            }
             return;
           }
         } catch {
@@ -257,10 +287,10 @@ function PreviewContent() {
         }
       }
       
-      // If we get here, the upload truly failed
+      // If we get here, the upload truly failed - remove only this batch's temp files
       setSection((prev) => {
         if (!prev) return null;
-        return { ...prev, files: prev.files.filter(f => !f.processing) };
+        return { ...prev, files: prev.files.filter(f => !tempFileIds.includes(f.id)) };
       });
       setError(err instanceof Error ? err.message : 'Upload failed');
     }
