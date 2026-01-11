@@ -3045,14 +3045,6 @@ export default function PracticePage() {
               <h1 className="mt-1 text-xl font-semibold text-white">
                 {setName}
               </h1>
-              {/* Mastery progress indicator */}
-              {totalReviewed > 0 && (
-                <div className="mt-1 flex items-center gap-2 text-xs">
-                  <span className="text-green-400">{masteredCards.size} mastered</span>
-                  <span className="text-slate-600">•</span>
-                  <span className="text-orange-400">{needsPracticeCards.size} need practice</span>
-                </div>
-              )}
             </div>
             <button
               onClick={handleResetFlashcards}
@@ -3065,11 +3057,32 @@ export default function PracticePage() {
             </button>
           </div>
 
-          <div className="h-2 bg-slate-800 mb-6">
-            <div 
-              className="h-full bg-indigo-600 transition-all"
-              style={{ width: `${((currentCardIndex + 1) / cards.length) * 100}%` }}
-            />
+          {/* Mastery progress bar */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <div className="flex items-center gap-3">
+                <span className="text-slate-400">{totalReviewed} of {cards.length} reviewed</span>
+                {totalReviewed > 0 && (
+                  <span className="text-white font-medium">{masteryPercentage}% mastered</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                  <span className="text-green-400">{masteredCards.size}</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-orange-500 rounded-full"></span>
+                  <span className="text-orange-400">{needsPracticeCards.size}</span>
+                </span>
+              </div>
+            </div>
+            <div className="h-2 bg-slate-800 overflow-hidden">
+              <div 
+                className="h-full bg-indigo-600 transition-all duration-300"
+                style={{ width: `${(totalReviewed / cards.length) * 100}%` }}
+              />
+            </div>
           </div>
 
           <div 
@@ -3096,9 +3109,12 @@ export default function PracticePage() {
             </div>
           </div>
 
-          {/* Mastery buttons - shown when card is flipped */}
-          {isFlipped && !isCurrentCardMastered && !isCurrentCardNeedsPractice && (
-            <div className="flex gap-4 mt-6">
+          {/* Mastery buttons container - always rendered to prevent layout shift */}
+          <div className="mt-6 relative" style={{ minHeight: '52px' }}>
+            {/* Buttons - invisible when not flipped or already reviewed */}
+            <div className={`flex gap-4 transition-opacity duration-200 ${
+              (!isFlipped || isCurrentCardMastered || isCurrentCardNeedsPractice) ? 'opacity-0 pointer-events-none' : 'opacity-100'
+            }`}>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -3124,39 +3140,41 @@ export default function PracticePage() {
                 Mastered
               </button>
             </div>
-          )}
 
-          {/* Show status if already reviewed */}
-          {(isCurrentCardMastered || isCurrentCardNeedsPractice) && (
-            <div className={`mt-6 p-3 text-center text-sm ${
-              isCurrentCardMastered 
-                ? 'bg-green-900/30 border border-green-600/50 text-green-400' 
-                : 'bg-orange-900/30 border border-orange-600/50 text-orange-400'
+            {/* Status overlay - shown when flipped and already reviewed */}
+            <div className={`absolute inset-0 flex items-center justify-center transition-opacity duration-200 ${
+              (isFlipped && (isCurrentCardMastered || isCurrentCardNeedsPractice)) ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}>
-              {isCurrentCardMastered ? '✓ Marked as mastered' : '⚠ Marked as needs practice'}
-              <button
-                onClick={() => {
-                  // Clear the status to allow re-rating
-                  if (isCurrentCardMastered) {
-                    setMasteredCards(prev => {
-                      const next = new Set(prev);
-                      next.delete(currentCardId);
-                      return next;
-                    });
-                  } else {
-                    setNeedsPracticeCards(prev => {
-                      const next = new Set(prev);
-                      next.delete(currentCardId);
-                      return next;
-                    });
-                  }
-                }}
-                className="ml-2 text-slate-400 hover:text-white underline"
-              >
-                Change
-              </button>
+              <div className={`w-full p-3 text-center text-sm ${
+                isCurrentCardMastered 
+                  ? 'bg-green-900/30 border border-green-600/50 text-green-400' 
+                  : 'bg-orange-900/30 border border-orange-600/50 text-orange-400'
+              }`}>
+                {isCurrentCardMastered ? '✓ Marked as mastered' : '⚠ Marked as needs practice'}
+                <button
+                  onClick={() => {
+                    // Clear the status to allow re-rating
+                    if (isCurrentCardMastered) {
+                      setMasteredCards(prev => {
+                        const next = new Set(prev);
+                        next.delete(currentCardId);
+                        return next;
+                      });
+                    } else {
+                      setNeedsPracticeCards(prev => {
+                        const next = new Set(prev);
+                        next.delete(currentCardId);
+                        return next;
+                      });
+                    }
+                  }}
+                  className="ml-2 text-slate-400 hover:text-white underline"
+                >
+                  Change
+                </button>
+              </div>
             </div>
-          )}
+          </div>
 
           <div className="flex items-center justify-between mt-6">
             <button
