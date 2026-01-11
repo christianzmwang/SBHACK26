@@ -2027,15 +2027,17 @@ export default function PracticePage() {
       return (
         <div className={`h-full overflow-auto -mt-4 transition-all duration-300 ${isVoiceAgentOpen ? 'mr-[400px]' : ''}`}>
           {/* Voice Agent Button - Overlaid on bottom nav */}
-          <button
-            onClick={() => setIsVoiceAgentOpen(true)}
-            className="fixed bottom-4 right-6 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
-            aria-label="Open voice assistant"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-            </svg>
-          </button>
+          {!isVoiceAgentOpen && (
+            <button
+              onClick={() => setIsVoiceAgentOpen(true)}
+              className="fixed bottom-4 right-6 z-[60] w-16 h-16 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:scale-110 flex items-center justify-center group"
+              aria-label="Open voice assistant"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+            </button>
+          )}
 
           <VoiceAgent
             ref={voiceAgentRef}
