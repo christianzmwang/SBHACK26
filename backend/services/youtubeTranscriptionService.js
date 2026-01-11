@@ -1,17 +1,17 @@
 /**
  * YouTube Transcription Service
  * 
- * Downloads audio from YouTube videos and transcribes them using Deepgram
+ * Extracts captions/subtitles from YouTube videos
+ * Uses youtube-caption-extractor to get existing captions (auto-generated or user-submitted)
+ * 
+ * This approach:
+ * - Doesn't require downloading audio (fast)
+ * - Won't get blocked by YouTube (uses caption API)
+ * - Works on cloud servers
+ * - Uses YouTube's own transcripts (free)
  */
 
-import ytdl from 'ytdl-core';
-import { createClient } from '@deepgram/sdk';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import { v4 as uuidv4 } from 'uuid';
-
-const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+import { getSubtitles, getVideoDetails } from 'youtube-caption-extractor';
 
 /**
  * Validate a YouTube URL
@@ -42,28 +42,47 @@ export const isValidYouTubeUrl = (url) => {
 export const extractVideoId = (url) => {
   if (!url) return null;
   
-  // Try ytdl-core's built-in function first
-  try {
-    return ytdl.getVideoID(url);
-  } catch {
-    return null;
-  }
+  // Handle youtu.be URLs
+  const shortMatch = url.match(/youtu\.be\/([^?&]+)/);
+  if (shortMatch) return shortMatch[1];
+  
+  // Handle youtube.com/watch?v= URLs
+  const watchMatch = url.match(/[?&]v=([^?&]+)/);
+  if (watchMatch) return watchMatch[1];
+  
+  // Handle youtube.com/embed/ URLs
+  const embedMatch = url.match(/youtube\.com\/embed\/([^?&]+)/);
+  if (embedMatch) return embedMatch[1];
+  
+  // Handle youtube.com/shorts/ URLs
+  const shortsMatch = url.match(/youtube\.com\/shorts\/([^?&]+)/);
+  if (shortsMatch) return shortsMatch[1];
+  
+  return null;
 };
 
 /**
  * Get video info from YouTube
  * 
  * @param {string} url - The YouTube URL
- * @returns {Promise<{title: string, duration: number, author: string}>}
+ * @returns {Promise<{title: string, duration: number, author: string, videoId: string}>}
  */
 export const getVideoInfo = async (url) => {
   try {
-    const info = await ytdl.getInfo(url);
+    const videoId = extractVideoId(url);
+    if (!videoId) {
+      throw new Error('Could not extract video ID from URL');
+    }
+
+    console.log(`[YouTube] Getting video info for: ${videoId}`);
+    
+    const details = await getVideoDetails({ videoID: videoId, lang: 'en' });
+    
     return {
-      title: info.videoDetails.title,
-      duration: parseInt(info.videoDetails.lengthSeconds, 10),
-      author: info.videoDetails.author.name,
-      videoId: info.videoDetails.videoId,
+      title: details.title || 'Unknown Title',
+      duration: 0, // Duration not provided by this API
+      author: details.description?.split('\n')[0] || 'Unknown Author',
+      videoId: videoId,
     };
   } catch (error) {
     console.error('[YouTube] Failed to get video info:', error.message);
@@ -72,143 +91,90 @@ export const getVideoInfo = async (url) => {
 };
 
 /**
- * Download audio from a YouTube video
+ * Get transcript from YouTube video captions
  * 
  * @param {string} url - The YouTube URL
- * @param {function} onProgress - Optional progress callback
- * @returns {Promise<string>} - Path to the downloaded audio file
+ * @param {string} lang - Language code (default: 'en')
+ * @returns {Promise<string>} - Full transcript text
  */
-export const downloadYouTubeAudio = async (url, onProgress = null) => {
-  if (!isValidYouTubeUrl(url)) {
-    throw new Error('Invalid YouTube URL');
+export const getYouTubeTranscript = async (url, lang = 'en') => {
+  const videoId = extractVideoId(url);
+  if (!videoId) {
+    throw new Error('Could not extract video ID from URL');
   }
 
-  const tempDir = os.tmpdir();
-  const filename = `youtube-${uuidv4()}.mp3`;
-  const filePath = path.join(tempDir, filename);
+  console.log(`[YouTube] Fetching captions for video: ${videoId}, language: ${lang}`);
 
-  console.log(`[YouTube] Downloading audio from: ${url}`);
-  console.log(`[YouTube] Saving to: ${filePath}`);
-
-  return new Promise((resolve, reject) => {
-    try {
-      const stream = ytdl(url, {
-        filter: 'audioonly',
-        quality: 'highestaudio',
-      });
-
-      const writeStream = fs.createWriteStream(filePath);
-
-      let downloadedBytes = 0;
-      let totalBytes = 0;
-
-      stream.on('info', (info, format) => {
-        totalBytes = parseInt(format.contentLength, 10) || 0;
-        console.log(`[YouTube] Video: ${info.videoDetails.title}`);
-        console.log(`[YouTube] Audio format: ${format.mimeType}`);
-      });
-
-      stream.on('data', (chunk) => {
-        downloadedBytes += chunk.length;
-        if (onProgress && totalBytes > 0) {
-          const percent = Math.round((downloadedBytes / totalBytes) * 100);
-          onProgress({ downloaded: downloadedBytes, total: totalBytes, percent });
-        }
-      });
-
-      stream.on('error', (error) => {
-        console.error('[YouTube] Download error:', error.message);
-        // Clean up partial file
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-        reject(new Error(`YouTube download failed: ${error.message}`));
-      });
-
-      writeStream.on('finish', () => {
-        console.log(`[YouTube] Download complete: ${downloadedBytes} bytes`);
-        resolve(filePath);
-      });
-
-      writeStream.on('error', (error) => {
-        console.error('[YouTube] Write error:', error.message);
-        reject(new Error(`Failed to save audio file: ${error.message}`));
-      });
-
-      stream.pipe(writeStream);
-    } catch (error) {
-      console.error('[YouTube] Error setting up download:', error.message);
-      reject(new Error(`YouTube download setup failed: ${error.message}`));
+  try {
+    // Try to get subtitles in the requested language
+    let subtitles = await getSubtitles({ videoID: videoId, lang: lang });
+    
+    // If no subtitles in requested language, try without language (get any available)
+    if (!subtitles || subtitles.length === 0) {
+      console.log(`[YouTube] No ${lang} captions found, trying auto-generated...`);
+      subtitles = await getSubtitles({ videoID: videoId });
     }
-  });
+
+    if (!subtitles || subtitles.length === 0) {
+      throw new Error('No captions available for this video. The video may not have subtitles or auto-generated captions.');
+    }
+
+    // Combine all subtitle segments into a full transcript
+    const transcript = subtitles
+      .map(sub => sub.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    console.log(`[YouTube] Extracted ${subtitles.length} caption segments, ${transcript.length} characters total`);
+    
+    return transcript;
+  } catch (error) {
+    console.error('[YouTube] Caption extraction error:', error.message);
+    throw new Error(`Failed to extract captions: ${error.message}`);
+  }
 };
 
 /**
- * Transcribe a YouTube video using Deepgram
+ * Transcribe a YouTube video by extracting its captions
  * 
  * @param {string} url - The YouTube URL
  * @param {function} onProgress - Optional progress callback for status updates
  * @returns {Promise<{transcript: string, videoInfo: object}>}
  */
 export const transcribeYouTubeVideo = async (url, onProgress = null) => {
-  if (!DEEPGRAM_API_KEY) {
-    throw new Error('DEEPGRAM_API_KEY environment variable is not set');
-  }
-
-  let audioFilePath = null;
-
   try {
     // Step 1: Get video info
     if (onProgress) onProgress({ stage: 'info', message: 'Getting video information...' });
-    const videoInfo = await getVideoInfo(url);
-    console.log(`[YouTube] Processing: "${videoInfo.title}" (${videoInfo.duration}s)`);
-
-    // Check video duration (Deepgram has limits, let's cap at 3 hours)
-    const maxDuration = 3 * 60 * 60; // 3 hours in seconds
-    if (videoInfo.duration > maxDuration) {
-      throw new Error(`Video is too long (${Math.round(videoInfo.duration / 60)} minutes). Maximum supported duration is ${maxDuration / 60} minutes.`);
-    }
-
-    // Step 2: Download audio
-    if (onProgress) onProgress({ stage: 'download', message: 'Downloading audio from YouTube...' });
-    audioFilePath = await downloadYouTubeAudio(url, (progress) => {
-      if (onProgress) {
-        onProgress({ 
-          stage: 'download', 
-          message: `Downloading audio... ${progress.percent}%`,
-          progress: progress.percent 
-        });
-      }
-    });
-
-    // Step 3: Transcribe with Deepgram
-    if (onProgress) onProgress({ stage: 'transcribe', message: 'Transcribing audio with Deepgram...' });
     
-    const deepgram = createClient(DEEPGRAM_API_KEY);
-    const audioBuffer = fs.readFileSync(audioFilePath);
-
-    console.log(`[YouTube] Sending ${audioBuffer.length} bytes to Deepgram for transcription...`);
-
-    const { result, error } = await deepgram.listen.prerecorded.transcribeFile(
-      audioBuffer,
-      {
-        model: 'nova-3',
-        smart_format: true,
-        punctuate: true,
-        paragraphs: true,
-        utterances: false,
-      }
-    );
-
-    if (error) {
-      console.error('[YouTube] Deepgram error:', error);
-      throw new Error(`Deepgram transcription failed: ${error.message || error}`);
+    const videoId = extractVideoId(url);
+    if (!videoId) {
+      throw new Error('Invalid YouTube URL');
     }
 
-    const transcript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript;
+    // Get video details
+    let videoInfo;
+    try {
+      videoInfo = await getVideoInfo(url);
+      console.log(`[YouTube] Processing: "${videoInfo.title}"`);
+    } catch (e) {
+      // If we can't get video info, continue with just the video ID
+      console.warn('[YouTube] Could not get video details, continuing anyway');
+      videoInfo = {
+        title: `YouTube Video (${videoId})`,
+        duration: 0,
+        author: 'Unknown',
+        videoId: videoId,
+      };
+    }
+
+    // Step 2: Extract captions
+    if (onProgress) onProgress({ stage: 'transcribe', message: 'Extracting video captions...' });
+    
+    const transcript = await getYouTubeTranscript(url, 'en');
 
     if (!transcript || transcript.trim().length === 0) {
-      throw new Error('No transcript could be generated from the video audio');
+      throw new Error('No transcript could be extracted from the video');
     }
 
     console.log(`[YouTube] Transcription complete: ${transcript.length} characters`);
@@ -218,16 +184,9 @@ export const transcribeYouTubeVideo = async (url, onProgress = null) => {
       videoInfo,
     };
 
-  } finally {
-    // Clean up temporary audio file
-    if (audioFilePath && fs.existsSync(audioFilePath)) {
-      try {
-        fs.unlinkSync(audioFilePath);
-        console.log('[YouTube] Cleaned up temporary audio file');
-      } catch (e) {
-        console.warn('[YouTube] Failed to clean up temp file:', e.message);
-      }
-    }
+  } catch (error) {
+    console.error('[YouTube] Transcription error:', error.message);
+    throw error;
   }
 };
 
@@ -235,6 +194,6 @@ export default {
   isValidYouTubeUrl,
   extractVideoId,
   getVideoInfo,
-  downloadYouTubeAudio,
+  getYouTubeTranscript,
   transcribeYouTubeVideo,
 };
