@@ -2,6 +2,16 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 
+interface QuestionResult {
+  questionNumber: number;
+  questionText: string;
+  userAnswer: string;
+  correctAnswer: string;
+  isCorrect: boolean;
+  isAnswered: boolean;
+  explanation?: string | null;
+}
+
 interface VoiceAgentProps {
   context: {
     viewMode: string;
@@ -11,6 +21,16 @@ interface VoiceAgentProps {
     userAnswer?: string;
     showResults?: boolean;
     score?: { correct: number; total: number; percentage: number };
+    quizName?: string;
+    questionResults?: QuestionResult[];
+    incorrectQuestions?: Array<{
+      questionNumber: number;
+      questionText: string;
+      userAnswer: string;
+      correctAnswer: string;
+      explanation?: string | null;
+    }>;
+    correctQuestions?: number[];
     currentCard?: any;
     currentCardIndex?: number;
     totalCards?: number;
@@ -717,14 +737,21 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
               <p className="text-slate-300 text-sm">
                 Context: <span className="font-medium text-white">
                   {context.viewMode === 'quiz' && context.showResults 
-                    ? 'Quiz Results'
+                    ? `Quiz Results - ${context.score?.correct}/${context.score?.total} (${context.score?.percentage}%)`
                     : context.viewMode === 'quiz'
-                    ? `Quiz Question ${context.currentQuestionIndex! + 1}`
+                    ? `Quiz Question ${context.currentQuestionIndex! + 1}/${context.totalQuestions}`
                     : context.viewMode === 'flashcards'
-                    ? `Flashcard ${context.currentCardIndex! + 1}`
+                    ? `Flashcard ${context.currentCardIndex! + 1}/${context.totalCards}`
                     : 'Practice Overview'}
                 </span>
               </p>
+              {context.viewMode === 'quiz' && context.showResults && context.incorrectQuestions && (
+                <p className="text-slate-400 text-xs mt-1">
+                  {context.incorrectQuestions.length === 0 
+                    ? 'Perfect score! Ask me about the topics covered.'
+                    : `${context.incorrectQuestions.length} question${context.incorrectQuestions.length > 1 ? 's' : ''} to review - ask me to explain!`}
+                </p>
+              )}
             </div>
           </div>
         </div>

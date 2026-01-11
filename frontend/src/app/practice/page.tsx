@@ -975,9 +975,60 @@ export default function PracticePage() {
       baseContext.totalQuestions = questions.length;
       baseContext.userAnswer = selectedAnswers[currentQuestionId];
       baseContext.showResults = showResults;
+      baseContext.quizName = generatedQuiz?.name || activeQuiz?.name || 'Quiz';
       
       if (showResults) {
         baseContext.score = calculateScore();
+        
+        // Build detailed results for each question
+        baseContext.questionResults = questions.map((q, idx) => {
+          const questionId = q.id ? String(q.id) : `q-${idx}`;
+          const userAnswer = selectedAnswers[questionId];
+          const correctAnswer = getCorrectAnswer(q);
+          const isAnswered = userAnswer !== undefined && userAnswer !== null && userAnswer !== '';
+          const isCorrect = isAnswered && userAnswer === correctAnswer;
+          
+          // Get the text of the user's answer and correct answer
+          const getUserAnswerText = () => {
+            if (!isAnswered) return 'Not answered';
+            if (q.options && typeof q.options === 'object') {
+              return (q.options as Record<string, string>)[userAnswer] || userAnswer;
+            }
+            return userAnswer;
+          };
+          
+          const getCorrectAnswerText = () => {
+            if (q.options && typeof q.options === 'object' && correctAnswer) {
+              return (q.options as Record<string, string>)[correctAnswer] || correctAnswer;
+            }
+            return correctAnswer || 'Unknown';
+          };
+          
+          return {
+            questionNumber: idx + 1,
+            questionText: q.question,
+            userAnswer: getUserAnswerText(),
+            correctAnswer: getCorrectAnswerText(),
+            isCorrect,
+            isAnswered,
+            explanation: q.explanation || null,
+          };
+        });
+        
+        // Summary of incorrect questions for easy reference
+        baseContext.incorrectQuestions = baseContext.questionResults
+          .filter((r: any) => !r.isCorrect)
+          .map((r: any) => ({
+            questionNumber: r.questionNumber,
+            questionText: r.questionText,
+            userAnswer: r.userAnswer,
+            correctAnswer: r.correctAnswer,
+            explanation: r.explanation,
+          }));
+        
+        baseContext.correctQuestions = baseContext.questionResults
+          .filter((r: any) => r.isCorrect)
+          .map((r: any) => r.questionNumber);
       }
     } else if (viewMode === 'flashcards' && (generatedFlashcards || activeFlashcardSet)) {
       const cards = generatedFlashcards?.flashcards || activeFlashcardSet?.cards || [];
