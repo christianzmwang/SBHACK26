@@ -569,8 +569,8 @@ export default function PracticePage() {
     }
 
     const parsedSetSize = parseInt(setSize) || 20;
-    if (parsedSetSize < 5 || parsedSetSize > 200) {
-      setError('Set size must be between 5 and 200');
+    if (parsedSetSize < 5 || parsedSetSize > 100) {
+      setError('Set size must be between 5 and 100');
       return;
     }
 
@@ -925,7 +925,13 @@ export default function PracticePage() {
 
   // Helper to get correct answer from either field format (backend may return either)
   const getCorrectAnswer = (q: Question): string | undefined => {
-    return q.correct_answer || q.correctAnswer;
+    const ans = q.correct_answer || q.correctAnswer;
+    if (practiceMode === 'true_false' && ans) {
+      const lower = String(ans).toLowerCase();
+      if (lower === 'true') return 'A';
+      if (lower === 'false') return 'B';
+    }
+    return ans;
   };
 
   // Calculate quiz score
@@ -1542,7 +1548,7 @@ export default function PracticePage() {
           ...q,
           options: { A: 'True', B: 'False' } as Record<string, string>,
           // Map original answer to True/False
-          correct_answer: q.correct_answer === 'A' ? 'A' : 'B'
+          correct_answer: (String(q.correct_answer || q.correctAnswer).toLowerCase() === 'true' || q.correct_answer === 'A' || q.correctAnswer === 'A') ? 'A' : 'B'
         }))
       : questions;
     
@@ -2120,12 +2126,12 @@ export default function PracticePage() {
                   value={setSize}
                   onChange={(e) => setSetSize(e.target.value)}
                   min="5"
-                  max="200"
+                  max="100"
                   className="flex-1 bg-slate-900 border border-slate-700 px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500"
                 />
                 <span className="text-slate-400 text-sm">questions</span>
               </div>
-              <p className="text-slate-500 text-xs mt-2">Min: 5, Max: 200</p>
+              <p className="text-slate-500 text-xs mt-2">Min: 5, Max: 100</p>
             </div>
 
             {/* Save to folder */}

@@ -15,6 +15,13 @@
 import { query, transaction } from '../config/database.js';
 import { callLLM } from './llmService.js';
 import { generateEmbedding, cosineSimilarity } from './embeddingService.js';
+import { Worker } from 'worker_threads';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const WORKER_PATH = path.resolve(__dirname, '../workers/clusterWorker.js');
 
 // Configuration
 const CONCURRENCY_LIMIT = 20; // Increased from 8 to speed up generation
@@ -194,180 +201,41 @@ const calculateChapterDistribution = (chapterGroups, totalQuestions) => {
 };
 
 /**
- * K-means++ initialization for better cluster centers
- */
-const initializeCentroids = (chunks, k) => {
-  if (chunks.length <= k) {
-    return chunks.map(c => c.embedding);
-  }
-
-  const centroids = [];
-  const usedIndices = new Set();
-
-  // First centroid: random
-  const firstIdx = Math.floor(Math.random() * chunks.length);
-  centroids.push(chunks[firstIdx].embedding);
-  usedIndices.add(firstIdx);
-
-  // Remaining centroids: weighted by distance from existing centroids
-  while (centroids.length < k) {
-    const distances = chunks.map((chunk, idx) => {
-      if (usedIndices.has(idx)) return 0;
-      
-      // Find minimum distance to any existing centroid
-      const minDist = Math.min(
-        ...centroids.map(c => 1 - cosineSimilarity(chunk.embedding, c))
-      );
-      return minDist * minDist; // Square for probability weighting
-    });
-
-    const totalDist = distances.reduce((a, b) => a + b, 0);
-    if (totalDist === 0) break;
-
-    // Weighted random selection
-    let random = Math.random() * totalDist;
-    let selectedIdx = 0;
-    for (let i = 0; i < distances.length; i++) {
-      random -= distances[i];
-      if (random <= 0) {
-        selectedIdx = i;
-        break;
-      }
-    }
-
-    if (!usedIndices.has(selectedIdx)) {
-      centroids.push(chunks[selectedIdx].embedding);
-      usedIndices.add(selectedIdx);
-    }
-  }
-
-  return centroids;
-};
-
-/**
  * Cluster chunks by topic using k-means on embeddings
+ * Offloaded to a worker thread to prevent blocking the event loop
  */
 const clusterChunksByTopic = (chunks, numClusters = DEFAULT_CLUSTER_COUNT) => {
-  if (chunks.length === 0) return [];
-  
-  // Adjust cluster count if we have fewer chunks
-  const actualClusters = Math.min(numClusters, Math.ceil(chunks.length / MIN_CHUNKS_PER_GROUP));
-  
-  if (actualClusters <= 1) {
-    return [{ chunks, centroid: null }];
-  }
-
-  console.log(`[TopicCluster] Clustering ${chunks.length} chunks into ${actualClusters} clusters`);
-
-  // Filter chunks with valid embeddings - handle both array and JSON string formats
-  const validChunks = chunks.filter(c => {
-    if (!c.embedding) return false;
-    if (Array.isArray(c.embedding)) return true;
-    // Try to parse if it's a string (PostgreSQL sometimes returns JSON as string)
-    if (typeof c.embedding === 'string') {
-      try {
-        const parsed = JSON.parse(c.embedding);
-        if (Array.isArray(parsed)) {
-          c.embedding = parsed; // Replace string with parsed array
-          return true;
-        }
-      } catch (e) {
-        return false;
+  return new Promise((resolve, reject) => {
+    // Run clustering in a separate worker thread
+    const worker = new Worker(WORKER_PATH);
+    
+    worker.on('message', (message) => {
+      if (message.success) {
+        resolve(message.result);
+      } else {
+        reject(new Error(message.error));
       }
-    }
-    return false;
-  });
-  
-  if (validChunks.length === 0) {
-    console.warn('[TopicCluster] No chunks with valid embeddings, using all chunks in single cluster');
-    return [{ chunks, centroid: null }];
-  }
-
-  console.log(`[TopicCluster] Found ${validChunks.length} chunks with valid embeddings`);
-
-  // Initialize centroids using k-means++
-  let centroids = initializeCentroids(validChunks, actualClusters);
-  
-  // K-means iterations
-  const maxIterations = 10;
-  let assignments = new Array(validChunks.length).fill(0);
-  
-  for (let iter = 0; iter < maxIterations; iter++) {
-    // Assignment step: assign each chunk to nearest centroid
-    const newAssignments = validChunks.map((chunk, idx) => {
-      let bestCluster = 0;
-      let bestSimilarity = -1;
-      
-      for (let c = 0; c < centroids.length; c++) {
-        const similarity = cosineSimilarity(chunk.embedding, centroids[c]);
-        if (similarity > bestSimilarity) {
-          bestSimilarity = similarity;
-          bestCluster = c;
-        }
-      }
-      
-      return bestCluster;
+      worker.terminate();
     });
 
-    // Check for convergence
-    const changed = newAssignments.some((a, i) => a !== assignments[i]);
-    assignments = newAssignments;
-    
-    if (!changed) {
-      console.log(`[TopicCluster] Converged at iteration ${iter + 1}`);
-      break;
-    }
+    worker.on('error', (error) => {
+      console.error('[TopicCluster] Worker error:', error);
+      reject(error);
+      worker.terminate();
+    });
 
-    // Update step: recalculate centroids
-    const newCentroids = [];
-    for (let c = 0; c < centroids.length; c++) {
-      const clusterChunks = validChunks.filter((_, i) => assignments[i] === c);
-      
-      if (clusterChunks.length === 0) {
-        newCentroids.push(centroids[c]); // Keep old centroid
-        continue;
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Worker stopped with exit code ${code}`));
       }
+    });
 
-      // Calculate mean embedding
-      const dims = clusterChunks[0].embedding.length;
-      const mean = new Array(dims).fill(0);
-      
-      for (const chunk of clusterChunks) {
-        for (let d = 0; d < dims; d++) {
-          mean[d] += chunk.embedding[d];
-        }
-      }
-      
-      for (let d = 0; d < dims; d++) {
-        mean[d] /= clusterChunks.length;
-      }
-      
-      newCentroids.push(mean);
-    }
-    
-    centroids = newCentroids;
-  }
-
-  // Build cluster objects
-  const clusters = [];
-  for (let c = 0; c < centroids.length; c++) {
-    const clusterChunks = validChunks.filter((_, i) => assignments[i] === c);
-    if (clusterChunks.length > 0) {
-      clusters.push({
-        chunks: clusterChunks,
-        centroid: centroids[c],
-        size: clusterChunks.length
-      });
-    }
-  }
-
-  // Sort clusters by size (largest first) for balanced distribution
-  clusters.sort((a, b) => b.size - a.size);
-
-  console.log(`[TopicCluster] Created ${clusters.length} clusters:`, 
-    clusters.map((c, i) => `Cluster ${i + 1}: ${c.size} chunks`).join(', '));
-
-  return clusters;
+    worker.postMessage({
+      chunks,
+      numClusters,
+      minChunksPerGroup: MIN_CHUNKS_PER_GROUP
+    });
+  });
 };
 
 /**
@@ -548,7 +416,7 @@ const generateQuestionsForCluster = async (cluster, options) => {
           front: q.front?.trim(),
           back: q.back?.trim(),
           questionType: questionType,
-          options: q.options || null,
+          options: questionType === 'multiple_choice' ? (q.options || null) : null,
           correctAnswer: q.correct_answer || q.correctAnswer || null,
           explanation: q.explanation || null,
           difficulty: q.difficulty || difficulty,
@@ -638,10 +506,12 @@ JSON format:
 ]`;
   } else if (questionType === 'true_false') {
     formatGuide = `Generate exactly ${count} true/false questions.
-Each question must have:
-- A statement that is either true or false (stated as a fact)
-- The correct answer (true or false)
-- An explanation
+Each question must be a DECLARATIVE STATEMENT.
+- Do NOT ask a question (e.g. "Is the sky blue?").
+- Do NOT provide options (A, B, C, D).
+- State a fact that is either clearly true or clearly false.
+- Provide the correct answer ("true" or "false").
+- Provide a brief explanation.
 
 JSON format:
 [
@@ -839,7 +709,7 @@ export const generateQuizFromSections = async (options, onProgress) => {
     
     console.log(`[QuizGen] Content has ${allChunks.length} chunks -> ${numClusters} topic clusters`);
     
-    const clusters = clusterChunksByTopic(allChunks, numClusters);
+    const clusters = await clusterChunksByTopic(allChunks, numClusters);
     
     // Distribute questions proportionally across clusters based on cluster size
     // This ensures good coverage even for small quizzes
@@ -1105,7 +975,7 @@ export const generateFlashcardsFromSections = async (options) => {
   } else {
     console.log(`[FlashcardGen] No chapter structure, using topic clustering`);
     const numClusters = Math.min(10, Math.ceil(allChunks.length / MIN_CHUNKS_PER_GROUP));
-    const clusters = clusterChunksByTopic(allChunks, numClusters);
+    const clusters = await clusterChunksByTopic(allChunks, numClusters);
     
     const bufferMultiplier = 1.3;
     const targetPerCluster = Math.ceil((count * bufferMultiplier) / clusters.length);
