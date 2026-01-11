@@ -1163,7 +1163,8 @@ export const generateQuizFromSections = async (options, onProgress) => {
     questions: finalQuestions,
     difficulty,
     folderId,
-    description
+    description,
+    questionType
   });
 
   console.log(`[QuizGen] Quiz saved with ID: ${quizId}`);
@@ -1503,16 +1504,22 @@ export const generateFlashcardsFromSections = async (options) => {
  * Store quiz in database
  */
 const storeQuiz = async (options) => {
-  const { userId, sectionIds, name, questions, difficulty, folderId, description } = options;
+  const { userId, sectionIds, name, questions, difficulty, folderId, description, questionType } = options;
+
+  // Determine the question type from the first question if not explicitly provided
+  const quizQuestionType = questionType || questions[0]?.questionType || 'multiple_choice';
+  
+  // Store question_type in metadata
+  const metadata = JSON.stringify({ question_type: quizQuestionType });
 
   return await transaction(async (client) => {
-    // Create quiz set
+    // Create quiz set with question_type in metadata
     const quizResult = await client.query(
       `INSERT INTO quiz_sets 
-       (user_id, section_ids, name, total_questions, difficulty, folder_id, description)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (user_id, section_ids, name, total_questions, difficulty, folder_id, description, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
-      [userId, sectionIds, name, questions.length, difficulty, folderId || null, description || null]
+      [userId, sectionIds, name, questions.length, difficulty, folderId || null, description || null, metadata]
     );
 
     const quizId = quizResult.rows[0].id;

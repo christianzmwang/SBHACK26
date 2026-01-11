@@ -169,10 +169,10 @@ router.get('/folders/:folderId', async (req, res) => {
 
     // Get quizzes in folder
     const quizzesResult = await query(
-      `SELECT id, name, description, total_questions, difficulty, best_score, 
-              attempt_count, last_attempted_at, created_at
-       FROM quiz_sets 
-       WHERE folder_id = $1 
+      `SELECT id, name, description, total_questions, difficulty, best_score,
+              attempt_count, last_attempted_at, created_at, metadata
+       FROM quiz_sets
+       WHERE folder_id = $1
        ORDER BY created_at DESC`,
       [folderId]
     );
@@ -187,11 +187,17 @@ router.get('/folders/:folderId', async (req, res) => {
       [folderId]
     );
 
+    // Map quizzes to include question_type from metadata
+    const quizzesWithType = quizzesResult.rows.map(q => ({
+      ...q,
+      question_type: q.metadata?.question_type || 'multiple_choice'
+    }));
+
     res.json({
       success: true,
       folder: {
         ...folderResult.rows[0],
-        quizzes: quizzesResult.rows,
+        quizzes: quizzesWithType,
         flashcardSets: flashcardsResult.rows
       }
     });
@@ -225,10 +231,10 @@ router.get('/overview', async (req, res) => {
 
     // Get all quizzes with folder info
     const quizzesResult = await query(
-      `SELECT id, name, description, total_questions, difficulty, best_score, 
-              attempt_count, last_attempted_at, folder_id, created_at
-       FROM quiz_sets 
-       WHERE user_id = $1 
+      `SELECT id, name, description, total_questions, difficulty, best_score,
+              attempt_count, last_attempted_at, folder_id, created_at, metadata
+       FROM quiz_sets
+       WHERE user_id = $1
        ORDER BY created_at DESC`,
       [userId]
     );
@@ -265,16 +271,22 @@ router.get('/overview', async (req, res) => {
       [userId]
     );
 
+    // Map quizzes to include question_type from metadata
+    const quizzesWithType = quizzesResult.rows.map(q => ({
+      ...q,
+      question_type: q.metadata?.question_type || 'multiple_choice'
+    }));
+
     // Calculate stats
-    const totalQuizzes = quizzesResult.rows.length;
+    const totalQuizzes = quizzesWithType.length;
     const totalFlashcardSets = flashcardsResult.rows.length;
-    const totalQuestions = quizzesResult.rows.reduce((sum, q) => sum + (q.total_questions || 0), 0);
+    const totalQuestions = quizzesWithType.reduce((sum, q) => sum + (q.total_questions || 0), 0);
     const totalCards = flashcardsResult.rows.reduce((sum, f) => sum + (f.total_cards || 0), 0);
 
     res.json({
       success: true,
       folders: buildPracticeFolderHierarchy(foldersResult.rows),
-      quizzes: quizzesResult.rows,
+      quizzes: quizzesWithType,
       flashcardSets: flashcardsResult.rows,
       recentAttempts: attemptsResult.rows,
       recentSessions: sessionsResult.rows,

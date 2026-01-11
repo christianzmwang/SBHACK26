@@ -296,6 +296,7 @@ export interface SavedQuiz {
   last_attempted_at?: string;
   folder_id?: string;
   created_at: string;
+  question_type?: 'multiple_choice' | 'true_false';
 }
 
 export interface SavedFlashcardSet {
