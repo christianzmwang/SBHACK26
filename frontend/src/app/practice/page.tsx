@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useSession } from "next-auth/react";
-import VoiceAgent from "@/app/components/VoiceAgent";
+import VoiceAgent, { type VoiceAction } from "@/app/components/VoiceAgent";
 import { useData } from "@/app/context/DataContext";
 import {
   foldersApi,
@@ -1090,6 +1090,150 @@ export default function PracticePage() {
     return baseContext;
   };
 
+  // Handle voice actions from VoiceAgent
+  const handleVoiceAction = useCallback(async (action: VoiceAction) => {
+    console.log('Handling voice action:', action);
+
+    switch (action.type) {
+      case 'GENERATE_QUIZ': {
+        const { questionCount, sectionIds, folderId, materialName, folderName } = action.params;
+        
+        // If we have section IDs directly, use them
+        if (sectionIds && sectionIds.length > 0) {
+          // Set up for generation
+          const parsedCount = questionCount || 20;
+          setSetSize(parsedCount.toString());
+          
+          // Trigger generation with the provided section IDs
+          setIsGenerating(true);
+          setError(null);
+          setGenerationStatus('Starting voice-initiated generation...');
+          
+          try {
+            const quiz = await practiceApi.generateQuiz({
+              sectionIds,
+              userId: userId!,
+              questionCount: parsedCount,
+              questionType: 'multiple_choice',
+              difficulty: 'mixed',
+              name: materialName || folderName || undefined,
+              folderId: folderId || undefined,
+              onProgress: (msg) => setGenerationStatus(msg),
+            });
+            
+            setGenerationStatus('');
+            setGeneratedQuiz(quiz);
+            setGeneratedFlashcards(null);
+            setCurrentQuestionIndex(0);
+            setSelectedAnswers({});
+            setShowResults(false);
+            setQuizStartTime(Date.now());
+            setPracticeMode('multiple_choice');
+            setViewMode('quiz');
+            refreshPracticeOverview();
+          } catch (err) {
+            console.error('Voice-initiated quiz generation failed:', err);
+            setError(err instanceof Error ? err.message : 'Failed to generate quiz');
+          } finally {
+            setIsGenerating(false);
+          }
+        } else {
+          // No section IDs - prompt user to select materials
+          setError('Please specify which material or folder to generate questions from. Try saying the exact name of your uploaded material.');
+        }
+        break;
+      }
+
+      case 'ANSWER_QUESTION': {
+        if (viewMode === 'quiz' && !showResults) {
+          const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+          const currentQuestion = questions[currentQuestionIndex];
+          if (currentQuestion) {
+            const questionId = currentQuestion.id ? String(currentQuestion.id) : `q-${currentQuestionIndex}`;
+            const answer = action.params.answer.toUpperCase();
+            
+            // Validate the answer is valid (A, B, C, D)
+            if (['A', 'B', 'C', 'D'].includes(answer)) {
+              handleSelectAnswer(questionId, answer);
+            }
+          }
+        }
+        break;
+      }
+
+      case 'NEXT_QUESTION': {
+        if (viewMode === 'quiz' && !showResults) {
+          handleNextQuestion();
+        }
+        break;
+      }
+
+      case 'PREV_QUESTION': {
+        if (viewMode === 'quiz' && !showResults) {
+          handlePrevQuestion();
+        }
+        break;
+      }
+
+      case 'SUBMIT_QUIZ': {
+        if (viewMode === 'quiz' && !showResults) {
+          handleSubmitQuiz();
+        }
+        break;
+      }
+
+      case 'FLIP_CARD': {
+        if (viewMode === 'flashcards') {
+          setIsFlipped(prev => !prev);
+        }
+        break;
+      }
+
+      case 'NEXT_CARD': {
+        if (viewMode === 'flashcards') {
+          handleNextCard();
+        }
+        break;
+      }
+
+      case 'PREV_CARD': {
+        if (viewMode === 'flashcards') {
+          handlePrevCard();
+        }
+        break;
+      }
+
+      case 'EXIT_PRACTICE': {
+        if (viewMode === 'quiz' || viewMode === 'flashcards') {
+          if (viewMode === 'quiz') {
+            handleResetQuiz();
+          } else {
+            handleResetFlashcards();
+          }
+        }
+        break;
+      }
+
+      case 'GO_TO_QUESTION': {
+        if (viewMode === 'quiz' && !showResults) {
+          const targetIndex = action.params.questionNumber - 1;
+          const questions = generatedQuiz?.questions || activeQuiz?.questions || [];
+          if (targetIndex >= 0 && targetIndex < questions.length) {
+            setCurrentQuestionIndex(targetIndex);
+          }
+        }
+        break;
+      }
+
+      default:
+        console.log('Unknown voice action:', action);
+    }
+  }, [
+    viewMode, showResults, currentQuestionIndex, generatedQuiz, activeQuiz,
+    userId, handleSelectAnswer, handleNextQuestion, handlePrevQuestion,
+    handleSubmitQuiz, handleNextCard, handlePrevCard, handleResetQuiz,
+    handleResetFlashcards, refreshPracticeOverview
+  ]);
 
   if (isLoading && !practiceOverview) {
     return (
@@ -1135,8 +1279,10 @@ export default function PracticePage() {
 
           <VoiceAgent
             context={getVoiceAgentContext()}
+            userId={userId}
             isOpen={isVoiceAgentOpen}
             onClose={() => setIsVoiceAgentOpen(false)}
+            onAction={handleVoiceAction}
           />
 
           <div className="max-w-3xl mx-auto">
@@ -1256,8 +1402,10 @@ export default function PracticePage() {
 
         <VoiceAgent
           context={getVoiceAgentContext()}
+          userId={userId}
           isOpen={isVoiceAgentOpen}
           onClose={() => setIsVoiceAgentOpen(false)}
+          onAction={handleVoiceAction}
         />
 
         {/* Question Overview Modal */}
@@ -1492,8 +1640,10 @@ export default function PracticePage() {
 
         <VoiceAgent
           context={getVoiceAgentContext()}
+          userId={userId}
           isOpen={isVoiceAgentOpen}
           onClose={() => setIsVoiceAgentOpen(false)}
+          onAction={handleVoiceAction}
         />
 
         <div className="max-w-2xl mx-auto">

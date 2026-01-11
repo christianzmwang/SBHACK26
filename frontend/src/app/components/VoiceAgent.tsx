@@ -12,6 +12,19 @@ interface QuestionResult {
   explanation?: string | null;
 }
 
+// Voice action types that can be triggered by voice commands
+export type VoiceAction = 
+  | { type: 'GENERATE_QUIZ'; params: { questionCount?: number; sectionIds?: string[]; folderId?: string; materialName?: string; folderName?: string } }
+  | { type: 'ANSWER_QUESTION'; params: { answer: string } }
+  | { type: 'NEXT_QUESTION' }
+  | { type: 'PREV_QUESTION' }
+  | { type: 'SUBMIT_QUIZ' }
+  | { type: 'FLIP_CARD' }
+  | { type: 'NEXT_CARD' }
+  | { type: 'PREV_CARD' }
+  | { type: 'EXIT_PRACTICE' }
+  | { type: 'GO_TO_QUESTION'; params: { questionNumber: number } };
+
 interface VoiceAgentProps {
   context: {
     viewMode: string;
@@ -37,8 +50,10 @@ interface VoiceAgentProps {
     isFlipped?: boolean;
     stats?: any;
   };
+  userId?: string;
   isOpen: boolean;
   onClose: () => void;
+  onAction?: (action: VoiceAction) => void;
 }
 
 interface Caption {
@@ -48,7 +63,7 @@ interface Caption {
   type: 'user' | 'assistant' | 'system';
 }
 
-export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps) {
+export default function VoiceAgent({ context, userId, isOpen, onClose, onAction }: VoiceAgentProps) {
   const [isConnected, setIsConnected] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -330,6 +345,44 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     }
   };
 
+  // Map action string to VoiceAction type
+  const mapActionToVoiceAction = (action: string, params: any): VoiceAction | null => {
+    switch (action) {
+      case 'GENERATE_QUIZ':
+        return {
+          type: 'GENERATE_QUIZ',
+          params: {
+            questionCount: params?.questionCount || 20,
+            sectionIds: params?.sectionIds || null,
+            folderId: params?.folderId || null,
+            materialName: params?.materialName || null,
+            folderName: params?.folderName || null,
+          }
+        };
+      case 'ANSWER_QUESTION':
+        if (params?.answer) {
+          return { type: 'ANSWER_QUESTION', params: { answer: params.answer } };
+        }
+        return null;
+      case 'NEXT_QUESTION':
+        return { type: 'NEXT_QUESTION' };
+      case 'PREV_QUESTION':
+        return { type: 'PREV_QUESTION' };
+      case 'SUBMIT_QUIZ':
+        return { type: 'SUBMIT_QUIZ' };
+      case 'FLIP_CARD':
+        return { type: 'FLIP_CARD' };
+      case 'NEXT_CARD':
+        return { type: 'NEXT_CARD' };
+      case 'PREV_CARD':
+        return { type: 'PREV_CARD' };
+      case 'EXIT_PRACTICE':
+        return { type: 'EXIT_PRACTICE' };
+      default:
+        return null;
+    }
+  };
+
   // Process user speech and get AI response
   const processUserSpeech = async (transcript: string) => {
     // Cancel any previous processing
@@ -345,11 +398,11 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
     try {
       addCaption(transcript, 'user');
 
-      // Stream response from backend
+      // Stream response from backend - include userId for material lookup
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/voice/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript, context }),
+        body: JSON.stringify({ transcript, context, userId }),
         signal: abortController.signal,
       });
 
@@ -360,6 +413,7 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let fullText = '';
+      let actionExecuted = false;
 
       if (reader) {
         try {
@@ -380,6 +434,18 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
               if (line.startsWith('data: ')) {
                 try {
                   const data = JSON.parse(line.slice(6));
+                  
+                  // Handle action commands from backend
+                  if (data.action && onAction && !actionExecuted) {
+                    const voiceAction = mapActionToVoiceAction(data.action, data.params);
+                    if (voiceAction) {
+                      console.log('Executing voice action:', voiceAction);
+                      addCaption(`[Action: ${data.action}]`, 'system');
+                      onAction(voiceAction);
+                      actionExecuted = true;
+                    }
+                  }
+                  
                   if (data.text) {
                     fullText += data.text;
                   }
@@ -752,6 +818,40 @@ export default function VoiceAgent({ context, isOpen, onClose }: VoiceAgentProps
                     : `${context.incorrectQuestions.length} question${context.incorrectQuestions.length > 1 ? 's' : ''} to review - ask me to explain!`}
                 </p>
               )}
+            </div>
+
+            {/* Voice Commands Help */}
+            <div className="w-full px-3 py-2 bg-indigo-900/30 rounded border border-indigo-500/30">
+              <p className="text-indigo-300 text-xs font-medium mb-1">🎤 Voice Commands:</p>
+              <div className="text-slate-400 text-xs space-y-0.5">
+                {context.viewMode === 'overview' && (
+                  <>
+                    <p>• "Generate 50 questions on [material name]"</p>
+                    <p>• "Create a quiz from [folder name]"</p>
+                  </>
+                )}
+                {context.viewMode === 'quiz' && !context.showResults && (
+                  <>
+                    <p>• Say "A", "B", "C", or "D" to answer</p>
+                    <p>• "Next question" / "Previous question"</p>
+                    <p>• "Submit quiz" to finish</p>
+                    <p>• "Go back" to exit</p>
+                  </>
+                )}
+                {context.viewMode === 'quiz' && context.showResults && (
+                  <>
+                    <p>• "Explain question 3" - get help on specific questions</p>
+                    <p>• "Go back" to return to overview</p>
+                  </>
+                )}
+                {context.viewMode === 'flashcards' && (
+                  <>
+                    <p>• "Flip card" / "Show answer"</p>
+                    <p>• "Next card" / "Previous card"</p>
+                    <p>• "Go back" to exit</p>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>

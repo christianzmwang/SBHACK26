@@ -201,9 +201,18 @@ export const streamChatCompletion = async function* (messages, options = {}) {
   yield response;
 };
 
+/**
+ * Non-streaming chat completion with messages array
+ * Returns the complete response as a string
+ */
+export const chatCompletion = async (messages, options = {}) => {
+  return await callLLMWithHistory(messages, options);
+};
+
 export default {
   callLLM,
   callLLMWithHistory,
   streamLLM,
-  streamChatCompletion
+  streamChatCompletion,
+  chatCompletion
 };
