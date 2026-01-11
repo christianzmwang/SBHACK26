@@ -216,6 +216,9 @@ function PreviewContent() {
       if (warnings && warnings.length > 0) {
         setUploadWarnings(warnings);
       }
+
+      // Refresh content structure after successful upload
+      loadContentStructure();
     } catch (err) {
       // Poll for completion - backend may still be processing
       // Try up to 10 times with 3 second delays (30 seconds total)
@@ -232,6 +235,8 @@ function PreviewContent() {
             if (newFiles.length > 0) {
               setSelectedFile((prev) => prev || newFiles[newFiles.length - 1]);
             }
+            // Refresh content structure after polling recovery
+            loadContentStructure();
             return;
           }
         } catch {
@@ -294,6 +299,9 @@ function PreviewContent() {
       if (warnings && warnings.length > 0) {
         setUploadWarnings(warnings);
       }
+
+      // Refresh content structure after successful upload
+      loadContentStructure();
     } catch (err) {
       // Poll for completion - backend may still be processing
       // Try up to 10 times with 3 second delays (30 seconds total)
@@ -310,6 +318,8 @@ function PreviewContent() {
             if (newFiles.length > 0) {
               setSelectedFile((prev) => prev || newFiles[newFiles.length - 1]);
             }
+            // Refresh content structure after polling recovery
+            loadContentStructure();
             return;
           }
         } catch {
@@ -445,6 +455,9 @@ function PreviewContent() {
 
       // Clear the input
       setYoutubeUrl('');
+
+      // Refresh content structure after successful upload
+      loadContentStructure();
     } catch (err) {
       // Remove temp file on error
       setSection((prev) => {
@@ -896,7 +909,11 @@ function PreviewContent() {
                                   </div>
                                 </div>
                                 <span className="text-xs font-medium px-2 py-1 text-slate-400">
-                                  {material.hasChapters ? `${material.chapters.length} Chapters` : `${material.topicSummary?.topics?.length || 0} Topics`}
+                                  {material.hasChapters 
+                                    ? (material.chapters.every(ch => ch.isGeneratedTopic) 
+                                        ? `${material.chapters.length} Topics` 
+                                        : `${material.chapters.length} Chapters`)
+                                    : `${material.topicSummary?.topics?.length || 0} Topics`}
                                 </span>
                               </div>
 
