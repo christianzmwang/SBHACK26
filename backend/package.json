@@ -23,7 +23,8 @@
     "pg": "^8.16.3",
     "pgvector": "^0.2.1",
     "tesseract.js": "^7.0.0",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "ytdl-core": "^4.11.5"
   },
   "main": "server.js",
   "keywords": [],

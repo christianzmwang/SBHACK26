@@ -717,6 +717,30 @@ export const foldersApi = {
     await handleResponse(response);
   },
 
+  async uploadYouTubeUrl(sectionId: string, url: string): Promise<{ file: FileItem; videoInfo?: { title: string; author: string; duration: number }; warning?: FileWarning }> {
+    // Use longer timeout for YouTube transcription (5 minutes) since download + transcription takes time
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+
+    try {
+      const response = await fetch(`${API_BASE}/sections/${sectionId}/youtube`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      const data = await handleResponse<{ file: FileItem; videoInfo?: { title: string; author: string; duration: number }; warning?: FileWarning }>(response);
+      return { file: data.file, videoInfo: data.videoInfo, warning: data.warning };
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error('YouTube transcription timed out. The video may be too long or the connection was interrupted.');
+      }
+      throw err;
+    }
+  },
+
   async getFileContent(fileId: string): Promise<{ textContent: string | null; chunkCount?: number; message?: string }> {
     // Guard against temporary file IDs (not valid UUIDs)
     if (fileId.startsWith('temp-')) {

@@ -8,6 +8,7 @@ import express from 'express';
 import { upload, cleanupFiles } from '../middleware/upload.js';
 import { query, transaction } from '../config/database.js';
 import { processAndStoreDocuments, deleteMaterial } from '../services/advancedDocumentProcessor.js';
+import { transcribeYouTubeVideo, isValidYouTubeUrl, getVideoInfo } from '../services/youtubeTranscriptionService.js';
 
 const router = express.Router();
 
@@ -375,6 +376,111 @@ router.post('/sections/:sectionId/files', upload.array('files', 10), async (req,
   }
 });
 
+
+/**
+ * Upload a YouTube video to a section (transcribed via Deepgram)
+ * POST /api/sections/:sectionId/youtube
+ */
+router.post('/sections/:sectionId/youtube', async (req, res) => {
+  try {
+    const { sectionId } = req.params;
+    const { url } = req.body;
+
+    if (!url) {
+      return res.status(400).json({ error: 'YouTube URL is required' });
+    }
+
+    if (!isValidYouTubeUrl(url)) {
+      return res.status(400).json({ error: 'Invalid YouTube URL. Please provide a valid YouTube video link.' });
+    }
+
+    // Get section info
+    const sectionResult = await query('SELECT * FROM folder_sections WHERE id = $1', [sectionId]);
+    if (sectionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Section not found' });
+    }
+    const section = sectionResult.rows[0];
+
+    console.log(`[YouTube Upload] Processing YouTube URL for section ${sectionId}: ${url}`);
+
+    // Get video info first for the file name
+    const videoInfo = await getVideoInfo(url);
+    const fileName = `${videoInfo.title} (YouTube).txt`;
+
+    // Transcribe the YouTube video
+    const { transcript } = await transcribeYouTubeVideo(url, (progress) => {
+      console.log(`[YouTube Upload] ${progress.message}`);
+    });
+
+    if (!transcript || transcript.trim().length === 0) {
+      return res.status(400).json({ error: 'Could not transcribe the YouTube video. The video may not have audio or may be too short.' });
+    }
+
+    // Process and store the transcript as a document
+    let materialId = null;
+    let fileWarning = null;
+
+    try {
+      // Create a mock file object for the processor
+      const mockFile = {
+        originalname: fileName,
+        buffer: Buffer.from(transcript, 'utf-8'),
+        mimetype: 'text/plain',
+        size: Buffer.byteLength(transcript, 'utf-8'),
+        path: null, // No file path, using buffer
+      };
+
+      const processResults = await processAndStoreDocuments([mockFile], {
+        type: section.type || 'document',
+        title: videoInfo.title,
+        textContent: transcript, // Pass the transcript directly
+      });
+
+      if (processResults[0]?.success && processResults[0]?.materialId) {
+        materialId = processResults[0].materialId;
+      }
+      if (processResults[0]?.warning) {
+        fileWarning = processResults[0].warning;
+      }
+    } catch (e) {
+      console.error('[YouTube Upload] Failed to process transcript:', e.message);
+      // Continue anyway - we'll store the file without material processing
+    }
+
+    // Store file reference
+    const fileResult = await query(
+      `INSERT INTO section_files (section_id, material_id, name, size, text_content)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [sectionId, materialId, fileName, formatFileSize(Buffer.byteLength(transcript, 'utf-8')), null]
+    );
+
+    const result = {
+      id: fileResult.rows[0].id,
+      name: fileResult.rows[0].name,
+      size: fileResult.rows[0].size,
+      uploadDate: fileResult.rows[0].upload_date,
+      materialId: fileResult.rows[0].material_id,
+      videoInfo: {
+        title: videoInfo.title,
+        author: videoInfo.author,
+        duration: videoInfo.duration,
+      },
+      warning: fileWarning
+    };
+
+    console.log(`[YouTube Upload] Successfully processed YouTube video: ${videoInfo.title}`);
+
+    res.status(201).json({
+      success: true,
+      file: result,
+      warning: fileWarning
+    });
+  } catch (error) {
+    console.error('[YouTube Upload] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 /**
  * Get file text content from processed chunks
