@@ -272,6 +272,7 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
         // Topic extraction patterns (mirrors advancedDocumentProcessor.js)
         const topicPatterns = [
           /^(?:Section\s+)?(\d+\.\d+(?:\.\d+)?)\s*[:.]\s*(.+?)$/gim, // 1.2 Title
+          /^\s*\d+\.\s+([A-Z][a-zA-Z0-9\s\-_]{2,50})$/gm, // 1. Title
           /^(#{3,4})\s+(.+?)$/gim, // ### Subsection
           /^\*\*([^*]+)\*\*$/gim, // **Topic**
           /^[A-Z][a-zA-Z0-9\s-]{3,50}:$/gm // "Topic Name:"
@@ -314,7 +315,7 @@ router.get('/materials/section/:sectionId/structure', async (req, res) => {
           estimatedClusters,
           topics: Array.from(foundTopics).sort(),
           message: embeddedChunks > 0 
-            ? `Will be grouped into ~${estimatedClusters} natural topic clusters.`
+            ? `Content analysis suggests ~${estimatedClusters} natural topic clusters. Specific topics will be identified during quiz generation.`
             : 'No embeddings available.'
         };
       }

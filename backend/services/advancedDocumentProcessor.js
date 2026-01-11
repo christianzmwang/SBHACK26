@@ -11,10 +11,16 @@ import mammoth from 'mammoth';
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { Worker } from 'worker_threads';
+import { fileURLToPath } from 'url';
 import { MathAwareChunker, SimpleChunker } from './mathAwareChunker.js';
 import { generateBatchEmbeddings, estimateTokenCount } from './embeddingService.js';
 import { query, transaction } from '../config/database.js';
 import { transcribeAudio, validateAudioFile } from './audioTranscriptionService.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const WORKER_PATH = path.resolve(__dirname, '../workers/clusterWorker.js');
 
 /**
  * Process uploaded documents and store in database
@@ -122,6 +128,75 @@ const processDocument = async (file, metadata) => {
     hasMath: isSTEM, // Use STEM classification for embedding strategy
     provider: 'openai'
   });
+
+  // Step 5: Perform topic clustering if no chapter structure was found
+  // This ensures we always have "chapters" (topics) to show in the UI
+  if (!documentStructure.hasStructure && chunks.length > 2) {
+    console.log('No chapter structure found. Running AI topic clustering...');
+    try {
+      // Prepare chunks with embeddings for worker
+      // Assign temporary ID to map back
+      const chunksWithEmbeddings = chunks.map((c, i) => ({
+        ...c,
+        embedding: embeddings[i]?.embedding,
+        _tempIndex: i
+      }));
+
+      // Filter out chunks without embeddings
+      const validChunks = chunksWithEmbeddings.filter(c => c.embedding);
+
+      if (validChunks.length > 0) {
+        const clusters = await clusterChunks(validChunks);
+        console.log(`Clustering complete: Found ${clusters.length} clusters`);
+
+        // Convert clusters to "chapters" structure
+        documentStructure.hasStructure = true;
+        documentStructure.chapters = clusters.map((cluster, i) => {
+          // Determine best label for this cluster
+          let title = `Topic ${i + 1}`;
+          
+          // Try to find a frequent topic keyword if available in metadata
+          // (Populated by assignChapterInfoToChunks if it found regex matches)
+          const topicCounts = {};
+          cluster.chunks.forEach(c => {
+            if (c.metadata?.topic) {
+              topicCounts[c.metadata.topic] = (topicCounts[c.metadata.topic] || 0) + 1;
+            }
+          });
+          
+          const sortedTopics = Object.entries(topicCounts).sort((a, b) => b[1] - a[1]);
+          if (sortedTopics.length > 0) {
+            title = `${sortedTopics[0][0]}`;
+          }
+
+          // Update chunks in the main array with this chapter info
+          cluster.chunks.forEach(clusterChunk => {
+            if (typeof clusterChunk._tempIndex !== 'undefined') {
+              const originalChunk = chunks[clusterChunk._tempIndex];
+              if (originalChunk) {
+                originalChunk.metadata = originalChunk.metadata || {};
+                originalChunk.metadata.chapter = i + 1;
+                originalChunk.metadata.chapterTitle = title;
+                originalChunk.metadata.isGeneratedTopic = true;
+              }
+            }
+          });
+
+          return {
+            number: i + 1,
+            title: title,
+            chunkCount: cluster.chunks.length,
+            topics: [] // Sub-topics could be added here if we did hierarchical clustering
+          };
+        });
+        
+        console.log(`Assigned ${documentStructure.chapters.length} generated topics as chapters`);
+      }
+    } catch (err) {
+      console.warn('Topic clustering failed:', err.message);
+      // Fallback: Continue without structure
+    }
+  }
 
   // Step 6: Store in database using transaction
   const materialId = await transaction(async (client) => {
@@ -756,6 +831,41 @@ export const reembedMaterial = async (materialId, options = {}) => {
   });
 
   return { updated: material.chunks.length };
+};
+
+/**
+ * Cluster chunks by topic using worker thread
+ */
+const clusterChunks = (chunks) => {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(WORKER_PATH);
+    
+    worker.on('message', (message) => {
+      if (message.success) {
+        resolve(message.result);
+      } else {
+        reject(new Error(message.error));
+      }
+      worker.terminate();
+    });
+
+    worker.on('error', (error) => {
+      reject(error);
+      worker.terminate();
+    });
+
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Worker stopped with exit code ${code}`));
+      }
+    });
+
+    worker.postMessage({
+      chunks,
+      numClusters: 6, // Default target
+      minChunksPerGroup: 1
+    });
+  });
 };
 
 export default {
