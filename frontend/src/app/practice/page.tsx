@@ -3096,9 +3096,12 @@ export default function PracticePage() {
             </div>
           </div>
 
-          {/* Mastery buttons - shown when card is flipped */}
-          {isFlipped && !isCurrentCardMastered && !isCurrentCardNeedsPractice && (
-            <div className="flex gap-4 mt-6">
+          {/* Mastery buttons container - always rendered to prevent layout shift */}
+          <div className="mt-6 relative" style={{ minHeight: '52px' }}>
+            {/* Buttons - invisible when not flipped or already reviewed */}
+            <div className={`flex gap-4 transition-opacity duration-200 ${
+              (!isFlipped || isCurrentCardMastered || isCurrentCardNeedsPractice) ? 'opacity-0 pointer-events-none' : 'opacity-100'
+            }`}>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -3124,39 +3127,41 @@ export default function PracticePage() {
                 Mastered
               </button>
             </div>
-          )}
 
-          {/* Show status if already reviewed */}
-          {(isCurrentCardMastered || isCurrentCardNeedsPractice) && (
-            <div className={`mt-6 p-3 text-center text-sm ${
-              isCurrentCardMastered 
-                ? 'bg-green-900/30 border border-green-600/50 text-green-400' 
-                : 'bg-orange-900/30 border border-orange-600/50 text-orange-400'
+            {/* Status overlay - shown when flipped and already reviewed */}
+            <div className={`absolute inset-0 flex items-center justify-center transition-opacity duration-200 ${
+              (isFlipped && (isCurrentCardMastered || isCurrentCardNeedsPractice)) ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}>
-              {isCurrentCardMastered ? '✓ Marked as mastered' : '⚠ Marked as needs practice'}
-              <button
-                onClick={() => {
-                  // Clear the status to allow re-rating
-                  if (isCurrentCardMastered) {
-                    setMasteredCards(prev => {
-                      const next = new Set(prev);
-                      next.delete(currentCardId);
-                      return next;
-                    });
-                  } else {
-                    setNeedsPracticeCards(prev => {
-                      const next = new Set(prev);
-                      next.delete(currentCardId);
-                      return next;
-                    });
-                  }
-                }}
-                className="ml-2 text-slate-400 hover:text-white underline"
-              >
-                Change
-              </button>
+              <div className={`w-full p-3 text-center text-sm ${
+                isCurrentCardMastered 
+                  ? 'bg-green-900/30 border border-green-600/50 text-green-400' 
+                  : 'bg-orange-900/30 border border-orange-600/50 text-orange-400'
+              }`}>
+                {isCurrentCardMastered ? '✓ Marked as mastered' : '⚠ Marked as needs practice'}
+                <button
+                  onClick={() => {
+                    // Clear the status to allow re-rating
+                    if (isCurrentCardMastered) {
+                      setMasteredCards(prev => {
+                        const next = new Set(prev);
+                        next.delete(currentCardId);
+                        return next;
+                      });
+                    } else {
+                      setNeedsPracticeCards(prev => {
+                        const next = new Set(prev);
+                        next.delete(currentCardId);
+                        return next;
+                      });
+                    }
+                  }}
+                  className="ml-2 text-slate-400 hover:text-white underline"
+                >
+                  Change
+                </button>
+              </div>
             </div>
-          )}
+          </div>
 
           <div className="flex items-center justify-between mt-6">
             <button

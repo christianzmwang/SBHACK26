@@ -24,11 +24,12 @@ const __dirname = path.dirname(__filename);
 const WORKER_PATH = path.resolve(__dirname, '../workers/clusterWorker.js');
 
 // Configuration
-const CONCURRENCY_LIMIT = 20; // Increased from 8 to speed up generation
+const CONCURRENCY_LIMIT = 25; // Higher concurrency for faster generation
 const MIN_CHUNKS_PER_GROUP = 1;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
 const DEFAULT_CLUSTER_COUNT = 6;
 const MAX_QUESTIONS_PER_CALL = 20; // Cap questions per LLM call to avoid truncated responses
+const MIN_QUESTIONS_PER_CALL = 4; // Batch small clusters together for efficiency
 
 /**
  * Run tasks in batches to respect rate limits
@@ -894,79 +895,25 @@ export const generateQuizFromSections = async (options, onProgress) => {
   let useChapterMode = false;
 
   if (chapterGroups && chapterGroups.length > 1) {
-    // Chapter structure detected - use two-level hierarchy: Chapter -> Topics within chapter
+    // Chapter structure detected - use chapters directly (already discovered at upload time)
+    // OPTIMIZATION: Skip sub-topic clustering - chapters were already identified during document processing
+    // The randomness in chunk selection handles diversity within chapters
     useChapterMode = true;
-    console.log(`[QuizGen] Detected ${chapterGroups.length} chapters, discovering topics within each...`);
+    console.log(`[QuizGen] Using ${chapterGroups.length} pre-discovered chapters (skipping redundant sub-clustering)`);
     
-    // First, calculate question distribution across chapters
+    // Calculate question distribution across chapters proportionally
     const chapterDistribution = calculateChapterDistribution(chapterGroups, questionCount);
     
-    // Then, discover natural topics within each chapter
-    generationGroups = [];
+    // Use chapters directly as generation groups - no sub-clustering needed
+    generationGroups = chapterDistribution.map(chapter => ({
+      ...chapter,
+      topicLabel: chapter.chapterTitle,
+      centroid: null  // Will be computed on-demand if needed
+    }));
     
-    for (const chapter of chapterDistribution) {
-      if (chapter.chunks.length <= 3) {
-        // Small chapter - treat as single topic
-        generationGroups.push({
-          ...chapter,
-          topicLabel: `${chapter.chapterTitle}`,
-          centroid: null
-        });
-      } else {
-        // Discover natural topics within this chapter
-        const chapterTopics = await clusterChunksByTopic(chapter.chunks);
-        
-        if (chapterTopics.length === 1) {
-          // Chapter has one cohesive topic
-          generationGroups.push({
-            ...chapter,
-            chunks: chapterTopics[0].chunks,
-            centroid: chapterTopics[0].centroid,
-            topicLabel: `${chapter.chapterTitle}`
-          });
-        } else {
-          // Distribute chapter's questions across its topics proportionally
-          const totalTopicChunks = chapterTopics.reduce((sum, t) => sum + t.chunks.length, 0);
-          
-          for (let t = 0; t < chapterTopics.length; t++) {
-            const topic = chapterTopics[t];
-            const proportion = topic.chunks.length / totalTopicChunks;
-            const topicQuestions = Math.max(1, Math.round(chapter.targetQuestions * proportion));
-            
-            generationGroups.push({
-              chapterNum: chapter.chapterNum,
-              chapterTitle: chapter.chapterTitle,
-              topicNum: t + 1,
-              topicLabel: `${chapter.chapterTitle} - Topic ${t + 1}`,
-              chunks: topic.chunks,
-              centroid: topic.centroid,
-              targetQuestions: topicQuestions,
-              proportion: (proportion * 100).toFixed(1) + '%'
-            });
-          }
-        }
-      }
-    }
-    
-    // Adjust totals to match requested count
-    let currentTotal = generationGroups.reduce((sum, g) => sum + g.targetQuestions, 0);
-    while (currentTotal < questionCount && generationGroups.length > 0) {
-      generationGroups.sort((a, b) => b.chunks.length - a.chunks.length)[0].targetQuestions++;
-      currentTotal++;
-    }
-    while (currentTotal > questionCount && generationGroups.length > 0) {
-      const largest = generationGroups.sort((a, b) => b.targetQuestions - a.targetQuestions).find(g => g.targetQuestions > 1);
-      if (largest) {
-        largest.targetQuestions--;
-        currentTotal--;
-      } else {
-        break;
-      }
-    }
-    
-    console.log(`[QuizGen] Using CHAPTER->TOPIC hierarchy with ${generationGroups.length} topic groups:`);
+    console.log(`[QuizGen] Chapter distribution for ${questionCount} questions:`);
     generationGroups.forEach(g => {
-      console.log(`  - ${g.topicLabel || g.chapterTitle}: ${g.targetQuestions} questions`);
+      console.log(`  - Ch${g.chapterNum}: ${g.chapterTitle} → ${g.targetQuestions} questions (${g.chunks.length} chunks)`);
     });
   } else {
     // No chapter structure - use hierarchical clustering to discover natural topics
@@ -1029,19 +976,18 @@ export const generateQuizFromSections = async (options, onProgress) => {
 
   // 4. Generate questions for each group
   const startTime = Date.now();
-  // Small buffer to ensure we get enough questions after deduplication
-  const bufferMultiplier = 1.15;
+  // Small buffer to ensure we get enough questions after deduplication (10% extra)
+  const bufferMultiplier = 1.10;
   
-  // Break down groups into smaller tasks if they exceed MAX_QUESTIONS_PER_CALL
+  // Create one task per group - the LLM will generate all questions for that chapter
+  // This minimizes API calls while maintaining chapter coverage
   const tasks = [];
   
   generationGroups.forEach((group, groupIndex) => {
     const targetWithBuffer = Math.ceil(group.targetQuestions * bufferMultiplier);
-    let remaining = targetWithBuffer;
-    
-    // Ensure at least one task even if target is small
-    if (remaining === 0) remaining = 1;
+    let remaining = Math.max(MIN_QUESTIONS_PER_CALL, targetWithBuffer);
 
+    // Only split into multiple tasks if exceeding MAX_QUESTIONS_PER_CALL
     while (remaining > 0) {
       const count = Math.min(MAX_QUESTIONS_PER_CALL, remaining);
       tasks.push({
@@ -1053,7 +999,7 @@ export const generateQuizFromSections = async (options, onProgress) => {
     }
   });
 
-  console.log(`[QuizGen] Created ${tasks.length} generation tasks for ${generationGroups.length} groups`);
+  console.log(`[QuizGen] Created ${tasks.length} LLM tasks for ${generationGroups.length} chapters (optimized from ~55+ to ${tasks.length})`);
 
   if (onProgress) onProgress("Generating questions with AI...");
   const results = await runInBatches(tasks, CONCURRENCY_LIMIT, (task, index) => 
@@ -1265,77 +1211,25 @@ export const generateFlashcardsFromSections = async (options) => {
   let useChapterMode = false;
 
   if (chapterGroups && chapterGroups.length > 1) {
-    // Chapter structure detected - use two-level hierarchy: Chapter -> Topics within chapter
+    // Chapter structure detected - use chapters directly (already discovered at upload time)
+    // OPTIMIZATION: Skip sub-topic clustering - chapters were already identified during document processing
     useChapterMode = true;
-    console.log(`[FlashcardGen] Detected ${chapterGroups.length} chapters, discovering topics within each...`);
+    console.log(`[FlashcardGen] Using ${chapterGroups.length} pre-discovered chapters (skipping redundant sub-clustering)`);
     
-    // First, calculate flashcard distribution across chapters
+    // Calculate flashcard distribution across chapters proportionally
     const chapterDistribution = calculateChapterDistribution(chapterGroups, count);
     
-    // Then, discover natural topics within each chapter
-    generationGroups = [];
+    // Use chapters directly as generation groups
+    generationGroups = chapterDistribution.map(chapter => ({
+      ...chapter,
+      topicLabel: chapter.chapterTitle,
+      centroid: null
+    }));
     
-    for (const chapter of chapterDistribution) {
-      if (chapter.chunks.length <= 3) {
-        // Small chapter - treat as single topic
-        generationGroups.push({
-          ...chapter,
-          topicLabel: `${chapter.chapterTitle}`,
-          centroid: null
-        });
-      } else {
-        // Discover natural topics within this chapter
-        const chapterTopics = await clusterChunksByTopic(chapter.chunks);
-        
-        if (chapterTopics.length === 1) {
-          // Chapter has one cohesive topic
-          generationGroups.push({
-            ...chapter,
-            chunks: chapterTopics[0].chunks,
-            centroid: chapterTopics[0].centroid,
-            topicLabel: `${chapter.chapterTitle}`
-          });
-        } else {
-          // Distribute chapter's flashcards across its topics proportionally
-          const totalTopicChunks = chapterTopics.reduce((sum, t) => sum + t.chunks.length, 0);
-          
-          for (let t = 0; t < chapterTopics.length; t++) {
-            const topic = chapterTopics[t];
-            const proportion = topic.chunks.length / totalTopicChunks;
-            const topicCards = Math.max(1, Math.round(chapter.targetQuestions * proportion));
-            
-            generationGroups.push({
-              chapterNum: chapter.chapterNum,
-              chapterTitle: chapter.chapterTitle,
-              topicNum: t + 1,
-              topicLabel: `${chapter.chapterTitle} - Topic ${t + 1}`,
-              chunks: topic.chunks,
-              centroid: topic.centroid,
-              targetQuestions: topicCards,
-              proportion: (proportion * 100).toFixed(1) + '%'
-            });
-          }
-        }
-      }
-    }
-    
-    // Adjust totals to match requested count
-    let currentTotal = generationGroups.reduce((sum, g) => sum + g.targetQuestions, 0);
-    while (currentTotal < count && generationGroups.length > 0) {
-      generationGroups.sort((a, b) => b.chunks.length - a.chunks.length)[0].targetQuestions++;
-      currentTotal++;
-    }
-    while (currentTotal > count && generationGroups.length > 0) {
-      const largest = generationGroups.sort((a, b) => b.targetQuestions - a.targetQuestions).find(g => g.targetQuestions > 1);
-      if (largest) {
-        largest.targetQuestions--;
-        currentTotal--;
-      } else {
-        break;
-      }
-    }
-    
-    console.log(`[FlashcardGen] Using CHAPTER->TOPIC hierarchy with ${generationGroups.length} topic groups`);
+    console.log(`[FlashcardGen] Chapter distribution for ${count} flashcards:`);
+    generationGroups.forEach(g => {
+      console.log(`  - Ch${g.chapterNum}: ${g.chapterTitle} → ${g.targetQuestions} cards`);
+    });
   } else {
     // No chapter structure - use hierarchical clustering to discover natural topics
     console.log(`[FlashcardGen] No chapter structure, discovering natural topic clusters`);
@@ -1365,14 +1259,14 @@ export const generateFlashcardsFromSections = async (options) => {
 
   // 4. Generate flashcards for each group
   const startTime = Date.now();
-  // Buffer to ensure we get enough after deduplication
-  const bufferMultiplier = useChapterMode ? 1.5 : 1.3;
+  // Buffer to ensure we get enough after deduplication (10% extra)
+  const bufferMultiplier = 1.10;
   
-  // Break down groups into smaller tasks
+  // Create one task per group - minimizes API calls
   const tasks = [];
   
   generationGroups.forEach((group, groupIndex) => {
-    const targetWithBuffer = Math.ceil(group.targetQuestions * bufferMultiplier);
+    const targetWithBuffer = Math.max(MIN_QUESTIONS_PER_CALL, Math.ceil(group.targetQuestions * bufferMultiplier));
     let remaining = targetWithBuffer;
     
     if (remaining === 0) remaining = 1;
@@ -1388,7 +1282,7 @@ export const generateFlashcardsFromSections = async (options) => {
     }
   });
   
-  console.log(`[FlashcardGen] Created ${tasks.length} generation tasks for ${generationGroups.length} groups`);
+  console.log(`[FlashcardGen] Created ${tasks.length} LLM tasks for ${generationGroups.length} chapters (optimized)`);
 
   const results = await runInBatches(tasks, CONCURRENCY_LIMIT, (task, index) => 
     generateQuestionsForCluster(
