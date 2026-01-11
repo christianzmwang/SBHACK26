@@ -245,10 +245,13 @@ router.get('/topic-analysis', async (req, res) => {
           ) / NULLIF(COUNT(*), 0)
         ) as accuracy_percent,
         MAX(qa.completed_at) as last_practiced,
-        array_agg(DISTINCT qs.name) as quiz_names
+        array_agg(DISTINCT qs.name) as quiz_names,
+        array_agg(qs.section_ids) as raw_section_ids,
+        array_agg(DISTINCT mc.material_id) as raw_material_ids
       FROM quiz_attempts qa
       JOIN quiz_sets qs ON qa.quiz_set_id = qs.id
       JOIN questions q ON q.quiz_set_id = qs.id
+      LEFT JOIN material_chunks mc ON mc.id = ANY(q.source_chunk_ids)
       WHERE qa.user_id = $1
         AND q.topic IS NOT NULL 
         AND q.topic != ''
@@ -268,16 +271,36 @@ router.get('/topic-analysis', async (req, res) => {
       : null;
 
     // Format the response
-    const formattedTopics = topics.map(t => ({
-      topic: t.topic,
-      chapter: t.chapter,
-      totalAttempts: parseInt(t.total_attempts),
-      correctCount: parseInt(t.correct_count),
-      accuracy: parseInt(t.accuracy_percent),
-      lastPracticed: t.last_practiced,
-      quizNames: t.quiz_names.slice(0, 3), // Limit to 3 quiz names
-      needsWork: parseInt(t.accuracy_percent) < 70
-    }));
+    const formattedTopics = topics.map(t => {
+      // Flatten and uniquify section IDs
+      const sectionIds = new Set();
+      if (t.raw_section_ids && Array.isArray(t.raw_section_ids)) {
+        t.raw_section_ids.forEach(ids => {
+          if (Array.isArray(ids)) {
+             ids.forEach(id => sectionIds.add(id));
+          }
+        });
+      }
+
+      // Flatten and uniquify material IDs (fallback if section IDs are missing)
+      const materialIds = new Set();
+      if (t.raw_material_ids && Array.isArray(t.raw_material_ids)) {
+        t.raw_material_ids.filter(id => id).forEach(id => materialIds.add(id));
+      }
+
+      return {
+        topic: t.topic,
+        chapter: t.chapter,
+        totalAttempts: parseInt(t.total_attempts),
+        correctCount: parseInt(t.correct_count),
+        accuracy: parseInt(t.accuracy_percent),
+        lastPracticed: t.last_practiced,
+        quizNames: t.quiz_names ? t.quiz_names.slice(0, 3) : [],
+        needsWork: parseInt(t.accuracy_percent) < 70,
+        sourceSectionIds: [...sectionIds],
+        sourceMaterialIds: [...materialIds]
+      };
+    });
 
     res.json({
       success: true,

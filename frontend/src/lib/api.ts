@@ -347,6 +347,8 @@ export interface TopicPerformance {
   lastPracticed: string;
   quizNames: string[];
   needsWork: boolean;
+  sourceSectionIds?: string[];
+  sourceMaterialIds?: string[];
 }
 
 export interface TopicAnalysis {
