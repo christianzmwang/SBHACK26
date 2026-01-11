@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import VoiceAgent from "@/app/components/VoiceAgent";
+import { useData } from "@/app/context/DataContext";
 import {
   foldersApi,
   practiceApi,
@@ -39,17 +40,25 @@ interface SelectableItem {
 
 export default function PracticePage() {
   const { data: session } = useSession();
+  const { 
+    folders: materialFolders, 
+    practiceOverview, 
+    isLoadingFolders, 
+    isLoadingOverview,
+    refreshPracticeOverview 
+  } = useData();
   const [viewMode, setViewMode] = useState<ViewMode>('overview');
   
-  // Material folders for generation
-  const [materialFolders, setMaterialFolders] = useState<Folder[]>([]);
+  // Material folders for generation (managed by DataContext)
+  // const [materialFolders, setMaterialFolders] = useState<Folder[]>([]);
   
-  // Practice data
-  const [practiceOverview, setPracticeOverview] = useState<PracticeOverview | null>(null);
+  // Practice data (managed by DataContext)
+  // const [practiceOverview, setPracticeOverview] = useState<PracticeOverview | null>(null);
   const [selectedPracticeFolder, setSelectedPracticeFolder] = useState<string | null>(null);
   
   // Loading & error states
-  const [isLoading, setIsLoading] = useState(true);
+  const [localLoading, setLocalLoading] = useState(false);
+  const isLoading = isLoadingFolders || isLoadingOverview || localLoading;
   const [error, setError] = useState<string | null>(null);
   
   // Selection state for generation
@@ -128,12 +137,8 @@ export default function PracticePage() {
     return colorMap[color] || '#6366f1';
   };
 
-  // Load data on mount
-  useEffect(() => {
-    if (userId) {
-      loadData();
-    }
-  }, [userId]);
+  // Load data effect removed - handled by DataProvider
+
 
   // Keyboard shortcut for voice agent (V key)
   useEffect(() => {
@@ -170,28 +175,11 @@ export default function PracticePage() {
   }, [viewMode, materialFolders]);
 
 
-  const loadData = async () => {
-    if (!userId) return;
-    try {
-      setIsLoading(true);
-      const [overview, folders] = await Promise.all([
-        practiceApi.getOverview(userId),
-        foldersApi.list(userId)
-      ]);
-      setPracticeOverview(overview);
-      setMaterialFolders(folders);
-    } catch (err) {
-      console.error('Failed to load data:', err);
-      setError('Failed to load practice data');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   // Load specific quiz or flashcard set
   const loadQuiz = async (quizId: string, mode: PracticeMode = 'multiple_choice') => {
     try {
-      setIsLoading(true);
+      setLocalLoading(true);
       const quiz = await practiceApi.getQuiz(quizId);
       // Map the quiz to include required SavedQuiz properties
       const mappedQuiz: SavedQuiz & { questions: Question[] } = {
@@ -240,13 +228,13 @@ export default function PracticePage() {
       console.error('Failed to load quiz:', err);
       setError('Failed to load practice set');
     } finally {
-      setIsLoading(false);
+      setLocalLoading(false);
     }
   };
 
   const loadFlashcardSet = async (setId: string) => {
     try {
-      setIsLoading(true);
+      setLocalLoading(true);
       const set = await practiceApi.getFlashcardSet(setId);
       // Map the set to include required SavedFlashcardSet properties
       const mappedSet: SavedFlashcardSet & { cards: Flashcard[] } = {
@@ -267,7 +255,7 @@ export default function PracticePage() {
       console.error('Failed to load flashcard set:', err);
       setError('Failed to load flashcards');
     } finally {
-      setIsLoading(false);
+      setLocalLoading(false);
     }
   };
 
@@ -599,7 +587,7 @@ export default function PracticePage() {
       setPracticeMode('multiple_choice');
       setViewMode('quiz');
       // Refresh overview to show new practice set
-      loadData();
+      refreshPracticeOverview();
       
     } catch (err) {
       console.error('Failed to generate:', err);
@@ -624,7 +612,7 @@ export default function PracticePage() {
       setNewFolderDescription('');
       setNewFolderColor('#6366f1');
       setShowCreateFolderModal(false);
-      loadData();
+      refreshPracticeOverview();
     } catch (err) {
       console.error('Failed to create folder:', err);
       setError('Failed to create folder');
@@ -636,7 +624,7 @@ export default function PracticePage() {
     if (!confirm('Are you sure you want to delete this practice set?')) return;
     try {
       await practiceApi.deleteQuiz(quizId);
-      loadData();
+      refreshPracticeOverview();
     } catch (err) {
       console.error('Failed to delete practice set:', err);
       setError('Failed to delete practice set');
@@ -647,7 +635,7 @@ export default function PracticePage() {
     if (!confirm('Are you sure you want to delete this practice set?')) return;
     try {
       await practiceApi.deleteFlashcardSet(setId);
-      loadData();
+      refreshPracticeOverview();
     } catch (err) {
       console.error('Failed to delete practice set:', err);
       setError('Failed to delete practice set');
@@ -658,7 +646,7 @@ export default function PracticePage() {
     if (!confirm('Are you sure you want to delete this folder and all its contents?')) return;
     try {
       await practiceApi.deleteFolder(folderId);
-      loadData();
+      refreshPracticeOverview();
     } catch (err) {
       console.error('Failed to delete folder:', err);
       setError('Failed to delete folder');
@@ -730,7 +718,7 @@ export default function PracticePage() {
         timeTaken,
       });
       setShowResults(true);
-      loadData(); // Refresh to get updated stats
+      refreshPracticeOverview(); // Refresh to get updated stats
     } catch (err) {
       console.error('Failed to submit quiz:', err);
       setShowResults(true); // Still show results even if save failed

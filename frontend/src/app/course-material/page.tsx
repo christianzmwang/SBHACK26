@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
+import { useData } from "@/app/context/DataContext";
 import { 
   foldersApi,
   type Folder,
@@ -12,9 +13,10 @@ function CourseMaterialContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { data: session } = useSession();
-  const [folders, setFolders] = useState<Folder[]>([]);
+  const { folders, updateFoldersCache, isLoadingFolders } = useData();
   const [folderPath, setFolderPath] = useState<Folder[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // Local loading state for mutations
+  const [isMutating, setIsMutating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialPathRestored, setInitialPathRestored] = useState(false);
 
@@ -27,13 +29,6 @@ function CourseMaterialContent() {
   const [isAddingMaterial, setIsAddingMaterial] = useState(false);
   const [newMaterialName, setNewMaterialName] = useState("");
   const [newMaterialDescription, setNewMaterialDescription] = useState("");
-
-  // Load folders on mount
-  useEffect(() => {
-    if (userId) {
-      loadFolders();
-    }
-  }, [userId]);
 
   // Restore folder path from URL params after folders are loaded
   useEffect(() => {
@@ -70,19 +65,6 @@ function CourseMaterialContent() {
     return path;
   };
 
-  const loadFolders = async () => {
-    if (!userId) return;
-    try {
-      setIsLoading(true);
-      const loadedFolders = await foldersApi.list(userId);
-      setFolders(loadedFolders);
-    } catch (err) {
-      console.error('Failed to load folders:', err);
-      setError('Failed to load folders');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   // Helper to update nested folder structure
   const updateFolderAtPath = (
@@ -114,16 +96,16 @@ function CourseMaterialContent() {
     if (!newFolderName.trim() || !userId) return;
 
     try {
-      setIsLoading(true);
+      setIsMutating(true);
       const newFolder = await foldersApi.create(newFolderName.trim(), userId);
-      setFolders((prev) => [...prev, newFolder]);
+      updateFoldersCache([...folders, newFolder]);
       setNewFolderName("");
       setIsAddingFolder(false);
     } catch (err) {
       console.error('Failed to create folder:', err);
       setError('Failed to create folder');
     } finally {
-      setIsLoading(false);
+      setIsMutating(false);
     }
   };
 
@@ -131,15 +113,14 @@ function CourseMaterialContent() {
     if (!newFolderName.trim() || !currentFolder || !userId) return;
 
     try {
-      setIsLoading(true);
+      setIsMutating(true);
       const newSubfolder = await foldersApi.create(newFolderName.trim(), userId, currentFolder.id);
       
-      setFolders((prev) =>
-        updateFolderAtPath(prev, folderPath, (folder) => ({
-          ...folder,
-          subfolders: [...folder.subfolders, newSubfolder],
-        }))
-      );
+      const updatedFolders = updateFolderAtPath(folders, folderPath, (folder) => ({
+        ...folder,
+        subfolders: [...folder.subfolders, newSubfolder],
+      }));
+      updateFoldersCache(updatedFolders);
       
       setFolderPath((prev) => {
         const updated = [...prev];
@@ -158,14 +139,14 @@ function CourseMaterialContent() {
       console.error('Failed to create subfolder:', err);
       setError('Failed to create subfolder');
     } finally {
-      setIsLoading(false);
+      setIsMutating(false);
     }
   };
 
   const handleDeleteFolder = async (folderId: string) => {
     try {
       await foldersApi.delete(folderId);
-      setFolders((prev) => prev.filter((f) => f.id !== folderId));
+      updateFoldersCache(folders.filter((f) => f.id !== folderId));
     } catch (err) {
       console.error('Failed to delete folder:', err);
       setError('Failed to delete folder');
@@ -178,12 +159,11 @@ function CourseMaterialContent() {
     try {
       await foldersApi.delete(subfolderId);
       
-      setFolders((prev) =>
-        updateFolderAtPath(prev, folderPath, (folder) => ({
-          ...folder,
-          subfolders: folder.subfolders.filter((sf) => sf.id !== subfolderId),
-        }))
-      );
+      const updatedFolders = updateFolderAtPath(folders, folderPath, (folder) => ({
+        ...folder,
+        subfolders: folder.subfolders.filter((sf) => sf.id !== subfolderId),
+      }));
+      updateFoldersCache(updatedFolders);
       
       setFolderPath((prev) => {
         const updated = [...prev];
@@ -206,7 +186,7 @@ function CourseMaterialContent() {
     if (!newMaterialName.trim() || !currentFolder) return;
 
     try {
-      setIsLoading(true);
+      setIsMutating(true);
       const newSection = await foldersApi.createFolderSection(
         currentFolder.id,
         newMaterialName.trim(),
@@ -214,12 +194,11 @@ function CourseMaterialContent() {
         'custom'
       );
       
-      setFolders((prev) =>
-        updateFolderAtPath(prev, folderPath, (folder) => ({
-          ...folder,
-          sections: [...folder.sections, newSection],
-        }))
-      );
+      const updatedFolders = updateFolderAtPath(folders, folderPath, (folder) => ({
+        ...folder,
+        sections: [...folder.sections, newSection],
+      }));
+      updateFoldersCache(updatedFolders);
       
       setFolderPath((prev) => {
         const updated = [...prev];
@@ -239,7 +218,7 @@ function CourseMaterialContent() {
       console.error('Failed to create material:', err);
       setError('Failed to create material');
     } finally {
-      setIsLoading(false);
+      setIsMutating(false);
     }
   };
 
@@ -249,12 +228,11 @@ function CourseMaterialContent() {
     try {
       await foldersApi.deleteSection(sectionId);
 
-      setFolders((prev) =>
-        updateFolderAtPath(prev, folderPath, (folder) => ({
-          ...folder,
-          sections: folder.sections.filter((s) => s.id !== sectionId),
-        }))
-      );
+      const updatedFolders = updateFolderAtPath(folders, folderPath, (folder) => ({
+        ...folder,
+        sections: folder.sections.filter((s) => s.id !== sectionId),
+      }));
+      updateFoldersCache(updatedFolders);
       
       setFolderPath((prev) => {
         const updated = [...prev];
