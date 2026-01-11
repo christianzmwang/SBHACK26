@@ -503,20 +503,30 @@ const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgen
 
   // Convert text to speech using Deepgram TTS
   const speakText = async (text: string): Promise<void> => {
+    // Stop any currently playing audio first
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      if (currentAudioRef.current.src) {
+        URL.revokeObjectURL(currentAudioRef.current.src);
+      }
+      currentAudioRef.current = null;
+    }
+
     // Cancel any previous TTS request
     if (ttsAbortControllerRef.current) {
       ttsAbortControllerRef.current.abort();
     }
-    
+
     // Create new abort controller for this request
     const abortController = new AbortController();
     ttsAbortControllerRef.current = abortController;
-    
+
     return new Promise(async (resolve, reject) => {
       try {
         setIsSpeaking(true);
         isSpeakingRef.current = true;
-        
+
         const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/voice/tts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -528,7 +538,7 @@ const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgen
           throw new Error('Failed to generate speech');
         }
 
-        // Check if aborted before playing
+        // Check if aborted after fetch completes (critical for race condition)
         if (abortController.signal.aborted) {
           setIsSpeaking(false);
           isSpeakingRef.current = false;
@@ -537,9 +547,18 @@ const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgen
         }
 
         const audioBlob = await response.blob();
+
+        // Check if aborted after blob conversion (critical for race condition)
+        if (abortController.signal.aborted) {
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          resolve();
+          return;
+        }
+
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
-        
+
         // Store reference to current audio for interruption
         currentAudioRef.current = audio;
 
@@ -559,11 +578,12 @@ const VoiceAgent = forwardRef<VoiceAgentRef, VoiceAgentProps>(function VoiceAgen
           reject(e);
         };
 
-        // Check one more time before playing
+        // Final check before playing (critical for race condition)
         if (abortController.signal.aborted) {
           setIsSpeaking(false);
           isSpeakingRef.current = false;
           URL.revokeObjectURL(audioUrl);
+          currentAudioRef.current = null;
           resolve();
           return;
         }
