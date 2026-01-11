@@ -272,6 +272,29 @@ export default function PracticePage() {
     }
   }, [currentCardIndex, isFlipped, isVoiceAgentOpen, viewMode, generatedFlashcards, activeFlashcardSet]);
 
+  // Submit quiz handler - defined before useEffects that depend on it
+  const handleSubmitQuiz = useCallback(async () => {
+    const quizId = generatedQuiz?.quizId || activeQuizId;
+    if (!quizId || !userId) {
+      setShowResults(true);
+      return;
+    }
+
+    try {
+      const timeTaken = quizStartTime ? Math.round((Date.now() - quizStartTime) / 1000) : undefined;
+      await practiceApi.submitQuizAttempt(quizId, {
+        userId,
+        answers: selectedAnswers,
+        timeTaken,
+      });
+      setShowResults(true);
+      refreshPracticeOverview(); // Refresh to get updated stats
+    } catch (err) {
+      console.error('Failed to submit quiz:', err);
+      setShowResults(true); // Still show results even if save failed
+    }
+  }, [generatedQuiz?.quizId, activeQuizId, userId, quizStartTime, selectedAnswers, refreshPracticeOverview]);
+
   // Auto-advance to next question after answer is recorded (for hands-free mode)
   useEffect(() => {
     if (shouldAutoAdvanceRef.current && viewMode === 'quiz' && !showResults) {
@@ -868,28 +891,6 @@ export default function PracticePage() {
   const handlePrevQuestion = () => {
     if (currentQuestionIndex > 0) {
       setCurrentQuestionIndex(prev => prev - 1);
-    }
-  };
-
-  const handleSubmitQuiz = async () => {
-    const quizId = generatedQuiz?.quizId || activeQuizId;
-    if (!quizId || !userId) {
-      setShowResults(true);
-      return;
-    }
-
-    try {
-      const timeTaken = quizStartTime ? Math.round((Date.now() - quizStartTime) / 1000) : undefined;
-      await practiceApi.submitQuizAttempt(quizId, {
-        userId,
-        answers: selectedAnswers,
-        timeTaken,
-      });
-      setShowResults(true);
-      refreshPracticeOverview(); // Refresh to get updated stats
-    } catch (err) {
-      console.error('Failed to submit quiz:', err);
-      setShowResults(true); // Still show results even if save failed
     }
   };
 
