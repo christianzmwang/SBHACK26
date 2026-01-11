@@ -372,7 +372,7 @@ export const practiceApi = {
     // Use direct backend URL to bypass Next.js proxy timeout
     // LLM-based generation can take 30-90+ seconds
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3 * 60 * 1000);
+    const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // Increased to 5 minutes
 
     try {
       const response = await fetch(`${BACKEND_API}/practice/quizzes/generate`, {
@@ -464,7 +464,7 @@ export const practiceApi = {
     // Use direct backend URL to bypass Next.js proxy timeout
     // LLM-based generation can take 30-90+ seconds
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3 * 60 * 1000);
+    const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // Increased to 5 minutes
 
     try {
       const response = await fetch(`${BACKEND_API}/practice/flashcards/generate`, {

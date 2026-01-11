@@ -1516,7 +1516,7 @@ export default function PracticePage() {
               {isGenerating ? (
                 <>
                   <div className="animate-spin h-4 w-4 border-2 border-black border-t-transparent rounded-full" />
-                  Generating...
+                  Generating... (this may take 1-3 minutes)
                 </>
               ) : (
                 <>
@@ -1527,6 +1527,17 @@ export default function PracticePage() {
                 </>
               )}
             </button>
+            
+            {/* Loading message with helpful info */}
+            {isGenerating && (
+              <div className="mt-3 p-3 bg-indigo-900/30 border border-indigo-600 rounded text-sm text-indigo-200">
+                <p className="font-medium mb-1">🎯 Generating your practice set...</p>
+                <p className="text-xs text-indigo-300/80">
+                  Our AI is analyzing your materials and creating questions. This typically takes 1-3 minutes for standard quizzes.
+                  For large content selections, it may take up to 5 minutes.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>

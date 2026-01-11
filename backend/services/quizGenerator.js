@@ -17,9 +17,10 @@ import { callLLM } from './llmService.js';
 import { generateEmbedding, cosineSimilarity } from './embeddingService.js';
 
 // Configuration
-const CONCURRENCY_LIMIT = 10;
+const CONCURRENCY_LIMIT = 8; // Reduced from 10 to avoid rate limits
 const MIN_CHUNKS_PER_GROUP = 2;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
+const DEFAULT_CLUSTER_COUNT = 6; // Reduced from default to speed up generation
 
 /**
  * Run tasks in batches to respect rate limits
@@ -409,11 +410,11 @@ const generateQuestionsForCluster = async (cluster, options) => {
   }
 
   // Take diverse chunks - top relevant + some variety from the rest
-  const topChunks = contentChunks.slice(0, 5);
-  const remainingChunks = contentChunks.slice(5);
+  const topChunks = contentChunks.slice(0, 3); // Reduced from 5 to 3 for faster processing
+  const remainingChunks = contentChunks.slice(3);
   // Shuffle remaining and take a few for variety
   const shuffled = remainingChunks.sort(() => Math.random() - 0.5);
-  const varietyChunks = shuffled.slice(0, 3);
+  const varietyChunks = shuffled.slice(0, 2); // Reduced from 3 to 2
   contentChunks = [...topChunks, ...varietyChunks];
   
   if (contentChunks.length === 0) {
@@ -789,7 +790,9 @@ export const generateQuizFromSections = async (options) => {
   } else {
     // No chapter structure - fall back to topic clustering
     console.log(`[QuizGen] No chapter structure detected, using topic clustering`);
-    const numClusters = Math.min(10, Math.ceil(allChunks.length / MIN_CHUNKS_PER_GROUP));
+    // Reduce cluster count to speed up generation (fewer LLM calls)
+    const maxClusters = Math.min(6, Math.ceil(questionCount / 2)); // At least 2 questions per cluster
+    const numClusters = Math.min(maxClusters, Math.ceil(allChunks.length / MIN_CHUNKS_PER_GROUP));
     const clusters = clusterChunksByTopic(allChunks, numClusters);
     
     const bufferMultiplier = 1.3;
@@ -848,16 +851,7 @@ export const generateQuizFromSections = async (options) => {
     }
   }
   
-  for (const result of results) {
-    if (result.questions && result.questions.length > 0) {
-      allQuestions.push(...result.questions);
-    }
-    if (result.error) {
-      errors.push(result.error);
-    }
-  }
-  
-  console.log(`[QuizGen] Generated ${allQuestions.length} total questions from ${clusters.length} clusters`);
+  console.log(`[QuizGen] Generated ${allQuestions.length} total questions from ${generationGroups.length} groups`);
   
   if (errors.length > 0) {
     console.log(`[QuizGen] Errors encountered: ${errors.length} clusters failed`);
@@ -916,7 +910,7 @@ export const generateQuizFromSections = async (options) => {
     questionCount: finalQuestions.length,
     questions: finalQuestions,
     stats: {
-      clustersUsed: clusters.length,
+      clustersUsed: generationGroups.length,
       generationTimeMs: generationTime,
       totalGenerated: allQuestions.length,
       afterDedup: uniqueQuestions.length
